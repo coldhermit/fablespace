@@ -44,6 +44,7 @@ struct App {
     context: Option<Context<Arc<Window>>>,
     surface: Option<Surface<Arc<Window>, Arc<Window>>>,
     surface_size: (u32, u32),
+    wanted: (u32, u32),
     keys: Keys,
     game: game::Game,
     fb: Vec<u32>,
@@ -57,6 +58,7 @@ impl App {
             context: None,
             surface: None,
             surface_size: (0, 0),
+            wanted: (0, 0),
             keys: Keys::default(),
             game: game::Game::new(),
             fb: vec![0; (WIDTH * HEIGHT) as usize],
@@ -95,9 +97,10 @@ impl ApplicationHandler for App {
         if self.window.is_some() {
             return;
         }
+        let (win_w, win_h) = self.game.window_size();
         let attrs = Window::default_attributes()
             .with_title("Field Battle")
-            .with_inner_size(PhysicalSize::new(WIDTH, HEIGHT))
+            .with_inner_size(PhysicalSize::new(win_w, win_h))
             .with_min_inner_size(PhysicalSize::new(WIDTH / 4, HEIGHT / 4));
         let window = match event_loop.create_window(attrs) {
             Ok(window) => Arc::new(window),
@@ -126,6 +129,7 @@ impl ApplicationHandler for App {
         self.context = Some(context);
         self.surface = Some(surface);
         self.window = Some(window);
+        self.wanted = (win_w, win_h);
         self.next_frame = Instant::now();
     }
 
@@ -163,10 +167,31 @@ impl ApplicationHandler for App {
         if now >= self.next_frame {
             let input = self.keys.take();
             self.game.update(&input);
+            if self.game.should_quit() {
+                event_loop.exit();
+                return;
+            }
+            self.sync_window();
             self.next_frame = now + FRAME;
             window.request_redraw();
         }
         event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_frame));
+    }
+}
+
+impl App {
+    /// Resolution changes in the system menu resize the window immediately.
+    /// The framebuffer stays 1920x1080 and is scaled nearest-neighbor.
+    fn sync_window(&mut self) {
+        let Some(window) = self.window.clone() else {
+            return;
+        };
+        let size = self.game.window_size();
+        if self.wanted == size {
+            return;
+        }
+        let _ = window.request_inner_size(PhysicalSize::new(size.0, size.1));
+        self.wanted = size;
     }
 }
 
@@ -180,6 +205,7 @@ struct Keys {
     tap_y: i32,
     confirm: bool,
     pause: bool,
+    tab: bool,
 }
 
 impl Keys {
@@ -218,6 +244,7 @@ impl Keys {
         match code {
             KeyCode::KeyZ | KeyCode::Enter | KeyCode::NumpadEnter => self.confirm = true,
             KeyCode::Escape | KeyCode::KeyP => self.pause = true,
+            KeyCode::Tab => self.tab = true,
             _ => {}
         }
     }
@@ -230,11 +257,13 @@ impl Keys {
             tap_y: self.tap_y,
             confirm: self.confirm,
             pause: self.pause,
+            tab: self.tab,
         };
         self.tap_x = 0;
         self.tap_y = 0;
         self.confirm = false;
         self.pause = false;
+        self.tab = false;
         input
     }
 }
