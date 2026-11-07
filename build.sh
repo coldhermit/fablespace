@@ -22,4 +22,21 @@ case "$host" in
 esac
 cp -f "$author" "$root/$(basename "$author")"
 echo "Ready: $root/$(basename "$author")"
+case "$host" in
+  *windows*)
+    release=$(dirname "$author")
+    loader=""
+    if [ -f "$release/WebView2Loader.dll" ]; then
+      loader="$release/WebView2Loader.dll"
+    else
+      loader=$(find "$CARGO_TARGET_DIR" -path '*/x64/WebView2Loader.dll' -type f 2>/dev/null | head -n 1 || true)
+    fi
+    if [ -z "$loader" ]; then
+      echo "WebView2Loader.dll was not found. fablespace-author.exe needs that file in the same folder." >&2
+      exit 1
+    fi
+    cp -f "$loader" "$root/WebView2Loader.dll"
+    echo "Ready: $root/WebView2Loader.dll"
+    ;;
+esac
 echo "Save stores the project. Build, inside the author, writes the game."

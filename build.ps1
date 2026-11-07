@@ -83,5 +83,33 @@ if (-not (Test-Path $author)) {
     Write-Error "cargo finished but $author is missing."
 }
 Copy-Item -Force $author (Join-Path $Root "fablespace-author.exe")
+
+# The GNU Windows build loads WebView2 from a DLL beside the exe. Tauri leaves
+# that DLL under target\, so copy it next to fablespace-author.exe.
+$loaderDest = Join-Path $Root "WebView2Loader.dll"
+$loader = Join-Path (Split-Path $author) "WebView2Loader.dll"
+if (-not (Test-Path $loader)) {
+    $underTarget = Get-ChildItem -Path $env:CARGO_TARGET_DIR -Filter WebView2Loader.dll -Recurse -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -match '\\x64\\WebView2Loader\.dll$' } |
+        Select-Object -First 1
+    if ($underTarget) { $loader = $underTarget.FullName }
+}
+if (-not (Test-Path $loader)) {
+    $cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $env:USERPROFILE ".cargo" }
+    $registry = Join-Path $cargoHome "registry\src"
+    if (Test-Path $registry) {
+        $fromCrate = Get-ChildItem -Path $registry -Directory -ErrorAction SilentlyContinue |
+            ForEach-Object { Get-ChildItem $_.FullName -Directory -Filter "webview2-com-sys-*" -ErrorAction SilentlyContinue } |
+            ForEach-Object { Join-Path $_.FullName "x64\WebView2Loader.dll" } |
+            Where-Object { Test-Path $_ } |
+            Select-Object -First 1
+        if ($fromCrate) { $loader = $fromCrate }
+    }
+}
+if (-not (Test-Path $loader)) {
+    Write-Error "WebView2Loader.dll was not found. fablespace-author.exe needs that file in the same folder."
+}
+Copy-Item -Force $loader $loaderDest
 Write-Host "Ready: $(Join-Path $Root 'fablespace-author.exe')"
+Write-Host "Ready: $loaderDest"
 Write-Host "Save stores the project. Build, inside the author, writes the game."

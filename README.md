@@ -14,7 +14,7 @@ The game loads `project/` beside the executable, then `./project`.
 
 The author uses Tauri: Rust, plus the system webview (WebView2 on Windows). `rust-toolchain.toml` selects Rust 1.99.1, which the current Tauri crates need.
 
-On Windows, double-click `build.bat`. On Linux or macOS, run `./build.sh`. That builds the author only, as `fablespace-author` in this folder. It does not build the game.
+On Windows, double-click `build.bat`. On Linux or macOS, run `./build.sh`. That builds the author only, as `fablespace-author` in this folder. It does not build the game. On Windows the script also copies `WebView2Loader.dll` next to that exe.
 
 ```
 cargo run --manifest-path author/src-tauri/Cargo.toml
