@@ -1,4 +1,4 @@
-# Build the pixel game. The exe is copied next to project\.
+# Build the Twine-style author. The game is what the author's Build button writes.
 # Double-click build.bat, or run this file from PowerShell.
 $ErrorActionPreference = "Stop"
 $Root = $PSScriptRoot
@@ -75,13 +75,13 @@ function Invoke-Cargo([string[]]$cargoArgs) {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
-Write-Host "Building the game..."
-Invoke-Cargo ($prefix + @("build", "--release"))
+Write-Host "Building the author..."
+Invoke-Cargo ($prefix + @("build", "--release", "--manifest-path", "author/src-tauri/Cargo.toml"))
 
-$game = Join-Path $env:CARGO_TARGET_DIR "release\field-battle.exe"
-if (-not (Test-Path $game)) {
-    Write-Error "cargo finished but $game is missing."
+$author = Join-Path $env:CARGO_TARGET_DIR "release\fablespace-author.exe"
+if (-not (Test-Path $author)) {
+    Write-Error "cargo finished but $author is missing."
 }
-Copy-Item -Force $game (Join-Path $Root "field-battle.exe")
-Write-Host "Ready: $(Join-Path $Root 'field-battle.exe')"
-Write-Host "The game loads .\project from the same folder as field-battle.exe."
+Copy-Item -Force $author (Join-Path $Root "fablespace-author.exe")
+Write-Host "Ready: $(Join-Path $Root 'fablespace-author.exe')"
+Write-Host "Save stores the project. Build, inside the author, writes the game."

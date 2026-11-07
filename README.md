@@ -4,9 +4,6 @@ A grass field, a town, and one conversation. The author in `author/` is a deskto
 
 ## Play
 
-On Windows, double-click `build.bat`. On Linux or macOS, run `./build.sh`.
-That builds the release game and copies it next to `project/`.
-
 ```
 cargo run --release
 ```
@@ -17,10 +14,12 @@ The game loads `project/` beside the executable, then `./project`.
 
 The author uses Tauri: Rust, plus the system webview (WebView2 on Windows). `rust-toolchain.toml` selects Rust 1.99.1, which the current Tauri crates need.
 
+On Windows, double-click `build.bat`. On Linux or macOS, run `./build.sh`. That builds the author only, as `fablespace-author` in this folder. It does not build the game.
+
 ```
 cargo run --manifest-path author/src-tauri/Cargo.toml
 ```
 
 Save stores the author project only. It does not build the game.
 
-Build asks for a parent folder and a new folder name, then writes a portable game there: the pixel executable and the project data it loads. Nothing else is installed.
+Build, inside the author, asks for a parent folder and a new folder name, then writes a portable game there: the pixel executable and the project data it loads. Nothing else is installed.
