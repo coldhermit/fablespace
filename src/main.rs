@@ -1,7 +1,8 @@
-//! Window, keyboard, and the integer-scaled software framebuffer.
+//! Window, keyboard, and the nearest-neighbor software framebuffer.
 //!
-//! The internal picture is 320x180. The window is an integer multiple of that,
-//! nearest-neighbor, so the 16x16 sprites stay on the pixel grid.
+//! The picture is 1920x1080 and the window opens at that size, so one
+//! framebuffer pixel is one screen pixel. A smaller or larger window still
+//! samples nearest-neighbor and stays crisp.
 
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
@@ -96,8 +97,8 @@ impl ApplicationHandler for App {
         }
         let attrs = Window::default_attributes()
             .with_title("Field Battle")
-            .with_inner_size(PhysicalSize::new(WIDTH * 4, HEIGHT * 4))
-            .with_min_inner_size(PhysicalSize::new(WIDTH, HEIGHT));
+            .with_inner_size(PhysicalSize::new(WIDTH, HEIGHT))
+            .with_min_inner_size(PhysicalSize::new(WIDTH / 4, HEIGHT / 4));
         let window = match event_loop.create_window(attrs) {
             Ok(window) => Arc::new(window),
             Err(err) => {
@@ -246,23 +247,90 @@ fn axis(neg: bool, pos: bool) -> i32 {
     }
 }
 
+/// Where the picture sits in the window: origin, then width and height.
+/// Integer scale when the window can hold the framebuffer. Otherwise the
+/// picture shrinks to fit and the sampler stays nearest-neighbor.
+fn frame_in_window(dst_w: u32, dst_h: u32) -> (u32, u32, u32, u32) {
+    let src_w = WIDTH as u32;
+    let src_h = HEIGHT as u32;
+    if dst_w == 0 || dst_h == 0 {
+        return (0, 0, 0, 0);
+    }
+    if dst_w >= src_w && dst_h >= src_h {
+        let scale = (dst_w / src_w).min(dst_h / src_h).max(1);
+        let view_w = src_w * scale;
+        let view_h = src_h * scale;
+        let ox = (dst_w - view_w) / 2;
+        let oy = (dst_h - view_h) / 2;
+        (ox, oy, view_w, view_h)
+    } else if u64::from(dst_w) * u64::from(src_h) <= u64::from(dst_h) * u64::from(src_w) {
+        let view_w = dst_w;
+        let view_h = (u64::from(dst_w) * u64::from(src_h) / u64::from(src_w)).max(1) as u32;
+        let view_h = view_h.min(dst_h);
+        let oy = (dst_h - view_h) / 2;
+        (0, oy, view_w, view_h)
+    } else {
+        let view_h = dst_h;
+        let view_w = (u64::from(dst_h) * u64::from(src_w) / u64::from(src_h)).max(1) as u32;
+        let view_w = view_w.min(dst_w);
+        let ox = (dst_w - view_w) / 2;
+        (ox, 0, view_w, view_h)
+    }
+}
+
 fn blit_nearest(dst: &mut [u32], dst_w: u32, dst_h: u32, src: &[u32]) {
-    let scale = (dst_w / WIDTH as u32).min(dst_h / HEIGHT as u32).max(1);
-    let view_w = WIDTH as u32 * scale;
-    let view_h = HEIGHT as u32 * scale;
-    let ox = (dst_w - view_w) / 2;
-    let oy = (dst_h - view_h) / 2;
+    let (ox, oy, view_w, view_h) = frame_in_window(dst_w, dst_h);
+    let src_w = WIDTH as u32;
+    let src_h = HEIGHT as u32;
     for y in 0..dst_h {
         let row = y * dst_w;
         for x in 0..dst_w {
-            let color = if x >= ox && y >= oy && x < ox + view_w && y < oy + view_h {
-                let sx = (x - ox) / scale;
-                let sy = (y - oy) / scale;
-                src[(sy * WIDTH as u32 + sx) as usize]
+            let color = if view_w > 0
+                && view_h > 0
+                && x >= ox
+                && y >= oy
+                && x < ox + view_w
+                && y < oy + view_h
+            {
+                let sx = ((u64::from(x - ox) * u64::from(src_w)) / u64::from(view_w)) as u32;
+                let sy = ((u64::from(y - oy) * u64::from(src_h)) / u64::from(view_h)) as u32;
+                src[(sy.min(src_h - 1) * src_w + sx.min(src_w - 1)) as usize]
             } else {
                 0
             };
             dst[(row + x) as usize] = color;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_window_is_one_to_one() {
+        assert_eq!(frame_in_window(1920, 1080), (0, 0, 1920, 1080));
+        let mut src = vec![0u32; (WIDTH * HEIGHT) as usize];
+        src[(100 * WIDTH + 50) as usize] = 0x00FF00;
+        src[(100 * WIDTH + 51) as usize] = 0x0000FF;
+        let mut dst = vec![1u32; src.len()];
+        blit_nearest(&mut dst, WIDTH as u32, HEIGHT as u32, &src);
+        assert_eq!(dst[(100 * WIDTH + 50) as usize], 0x00FF00);
+        assert_eq!(dst[(100 * WIDTH + 51) as usize], 0x0000FF);
+    }
+
+    #[test]
+    fn larger_window_scales_by_an_integer() {
+        assert_eq!(frame_in_window(3850, 2170), (5, 5, 3840, 2160));
+    }
+
+    #[test]
+    fn smaller_window_fits_and_stays_nearest() {
+        assert_eq!(frame_in_window(960, 540), (0, 0, 960, 540));
+        assert_eq!(frame_in_window(1000, 1000), (0, 219, 1000, 562));
+        let src = vec![0x112233u32; (WIDTH * HEIGHT) as usize];
+        let mut dst = vec![0u32; 960 * 540];
+        blit_nearest(&mut dst, 960, 540, &src);
+        assert!(dst.iter().all(|&p| p == 0x112233));
     }
 }

@@ -1,10 +1,16 @@
 //! Code-drawn frame: grass field, dialogue, battle, and the pause menu.
 //! Panels, bars, and glyphs are rectangles and a bitmap font. No UI images.
+//!
+//! The field is the 20x11 map drawn at 6x, so a 16px tile is 96px and the
+//! map is 1920x1056. It is centered in the 1920x1080 view. Cells the player
+//! cannot walk, and the strip outside the map, stay a flat color.
+//! The bitmap font is drawn at 3x. Panels keep the previous arrangement,
+//! in 1080p pixels.
 
 use crate::atlas::{self, ATLAS, ATLAS_W, TILE};
 use crate::font::FONT;
 use crate::game::{
-    Back, Game, Mode, Phase, COMMANDS, HEIGHT, TALK_LINE, TRANSITION_FRAMES, WEAPON, WIDTH,
+    Back, Game, Mode, Phase, COMMANDS, HEIGHT, SCALE, TALK_LINE, TRANSITION_FRAMES, WEAPON, WIDTH,
 };
 
 const CREAM: u32 = 0xF3E6C8;
@@ -22,6 +28,12 @@ const SELECT: u32 = 0x5A3A22;
 const BATTLE_BG: u32 = 0x1B3A2A;
 const BATTLE_GROUND: u32 = 0x12281C;
 const HORIZON: u32 = 0x3E6A4A;
+/// Flat color for anything that is not walkable ground.
+const BLOCKED: u32 = 0x1A120C;
+
+const FONT_SCALE: i32 = 3;
+/// Battle portraits were three tiles tall in the old frame. 3 * 6 = 18.
+const PORTRAIT: i32 = 18;
 
 const MUSHROOMS: [(i32, i32); 4] = [(4, 3), (15, 2), (12, 8), (6, 6)];
 
@@ -60,32 +72,52 @@ fn transition_keep(frame: u16) -> u32 {
 }
 
 fn draw_field(fb: &mut [u32], game: &Game) {
-    let fill = grass_color();
-    fb.fill(fill);
+    let grass = grass_color();
+    fb.fill(BLOCKED);
+    let (cam_x, cam_y) = game.camera();
+    let tile = TILE * SCALE;
     for ty in 0..crate::game::MAP_H {
         for tx in 0..crate::game::MAP_W {
+            let x = tx * tile - cam_x;
+            let y = ty * tile - cam_y;
+            if !game.ground(tx, ty) {
+                fill(fb, x, y, tile, tile, BLOCKED);
+                continue;
+            }
             let id = match tile_hash(tx, ty) % 10 {
                 0 => atlas::SPR_FLOWER,
                 1 => atlas::SPR_BLOOM,
                 _ => atlas::SPR_GRASS,
             };
-            blit(fb, id, tx * TILE, ty * TILE, 1);
+            fill(fb, x, y, tile, tile, grass);
+            blit(fb, id, x, y, SCALE);
         }
     }
     for &(tx, ty) in &MUSHROOMS {
-        blit(fb, atlas::SPR_MUSHROOM, tx * TILE, ty * TILE, 1);
+        if game.ground(tx, ty) {
+            blit(
+                fb,
+                atlas::SPR_MUSHROOM,
+                tx * tile - cam_x,
+                ty * tile - cam_y,
+                SCALE,
+            );
+        }
     }
     if game.monster_alive {
-        let (x, y) = (game.mx * TILE, game.my * TILE);
-        shadow(fb, x, y, 1);
-        blit(fb, atlas::SPR_SLIME, x, y, 1);
+        let x = game.mx * tile - cam_x;
+        let y = game.my * tile - cam_y;
+        shadow(fb, x, y, SCALE);
+        blit(fb, atlas::SPR_SLIME, x, y, SCALE);
     }
-    let (x, mut y) = game.player_px();
+    let (px, mut py) = game.player_px();
     if game.bobbing() {
-        y -= 1;
+        py -= 1;
     }
-    shadow(fb, x, y, 1);
-    blit(fb, atlas::SPR_PLAYER, x, y, 1);
+    let x = px * SCALE - cam_x;
+    let y = py * SCALE - cam_y;
+    shadow(fb, x, y, SCALE);
+    blit(fb, atlas::SPR_PLAYER, x, y, SCALE);
 
     if matches!(game.mode, Mode::Talk | Mode::Pause(Back::Talk)) {
         draw_dialogue(fb, game);
@@ -96,50 +128,49 @@ fn draw_field(fb: &mut [u32], game: &Game) {
 
 fn draw_prompt(fb: &mut [u32]) {
     let label = "Z Talk";
-    let w = text_width(label) + 16;
-    let h = 20;
+    let w = text_width(label) + 96;
+    let h = 120;
     let x = (WIDTH - w) / 2;
-    let y = HEIGHT - h - 6;
+    let y = HEIGHT - h - 36;
     panel(fb, x, y, w, h);
-    text(fb, x + 8, y + 6, label, GOLD);
+    text(fb, x + 48, y + 36, label, GOLD);
 }
 
 fn draw_dialogue(fb: &mut [u32], game: &Game) {
-    let x = 8;
-    let y = 124;
-    let w = WIDTH - 16;
-    let h = 50;
+    let x = 48;
+    let y = 744;
+    let w = WIDTH - 96;
+    let h = 300;
     panel(fb, x, y, w, h);
-    text(fb, x + 10, y + 8, game.monster.name, SLIME);
-    text(fb, x + 10, y + 26, TALK_LINE, CREAM);
-    text(fb, x + w - 18, y + 26, "Z", GOLD);
+    text(fb, x + 60, y + 48, game.monster.name, SLIME);
+    text(fb, x + 60, y + 156, TALK_LINE, CREAM);
+    text(fb, x + w - 108, y + 156, "Z", GOLD);
 }
 
 fn draw_battle(fb: &mut [u32], game: &Game) {
     fb.fill(BATTLE_BG);
-    fill(fb, 0, 72, WIDTH, 48, BATTLE_GROUND);
-    fill(fb, 0, 72, WIDTH, 1, HORIZON);
+    fill(fb, 0, 432, WIDTH, 288, BATTLE_GROUND);
+    fill(fb, 0, 432, WIDTH, 6, HORIZON);
 
-    let scale = 3;
-    let sprite = TILE * scale;
-    let slime_x = WIDTH - 48 - sprite;
-    shadow(fb, 48, 22, scale);
-    blit(fb, atlas::SPR_PLAYER, 48, 22, scale);
+    let sprite = TILE * PORTRAIT;
+    let slime_x = WIDTH - 288 - sprite;
+    shadow(fb, 288, 132, PORTRAIT);
+    blit(fb, atlas::SPR_PLAYER, 288, 132, PORTRAIT);
     if game.monster.hp > 0 {
-        shadow(fb, slime_x, 22, scale);
-        blit(fb, atlas::SPR_SLIME, slime_x, 22, scale);
+        shadow(fb, slime_x, 132, PORTRAIT);
+        blit(fb, atlas::SPR_SLIME, slime_x, 132, PORTRAIT);
     }
 
-    fighter_card(fb, 24, false, &game.player, GOLD);
-    fighter_card(fb, WIDTH - 24, true, &game.monster, SLIME);
+    fighter_card(fb, 144, false, &game.player, GOLD);
+    fighter_card(fb, WIDTH - 144, true, &game.monster, SLIME);
 
-    panel(fb, 8, 118, WIDTH - 16, 56);
+    panel(fb, 48, 708, WIDTH - 96, 336);
     let choosing = matches!(game.battle.phase, Phase::Choose);
     for (i, name) in COMMANDS.iter().enumerate() {
-        let y = 126 + i as i32 * 14;
+        let y = 756 + i as i32 * 84;
         let selected = choosing && i == game.battle.cursor;
         if selected {
-            fill(fb, 16, y - 2, 78, 12, SELECT);
+            fill(fb, 96, y - 12, 468, 72, SELECT);
         }
         let color = if selected {
             GOLD
@@ -149,21 +180,21 @@ fn draw_battle(fb: &mut [u32], game: &Game) {
             DIM
         };
         if selected {
-            text(fb, 18, y, ">", GOLD);
+            text(fb, 108, y, ">", GOLD);
         }
-        text(fb, 30, y, name, color);
+        text(fb, 180, y, name, color);
     }
-    let log_x = 128;
-    let log_bottom = 118 + 56 - 10;
+    let log_x = 768;
+    let log_bottom = 708 + 336 - 60;
     let lines = game.battle.log.len() as i32;
     for (i, line) in game.battle.log.iter().enumerate() {
-        let y = log_bottom - (lines - 1 - i as i32) * 12;
+        let y = log_bottom - (lines - 1 - i as i32) * 72;
         let color = if i + 1 == game.battle.log.len() {
             CREAM
         } else {
             DIM
         };
-        text_clip(fb, log_x, y, line, color, WIDTH - 16);
+        text_clip(fb, log_x, y, line, color, WIDTH - 96);
     }
 }
 
@@ -174,41 +205,41 @@ fn fighter_card(
     fighter: &crate::game::Fighter,
     color: u32,
 ) {
-    let bar_w = 104;
+    let bar_w = 624;
     let x = if right { edge - bar_w } else { edge };
     let hp = format!("{}/{}", fighter.hp.max(0), fighter.max_hp);
-    text(fb, x, 78, fighter.name, color);
-    text(fb, x + bar_w - text_width(&hp), 78, &hp, CREAM);
-    hp_bar(fb, x, 90, bar_w, 8, fighter.hp, fighter.max_hp);
+    text(fb, x, 468, fighter.name, color);
+    text(fb, x + bar_w - text_width(&hp), 468, &hp, CREAM);
+    hp_bar(fb, x, 540, bar_w, 48, fighter.hp, fighter.max_hp);
 }
 
 fn draw_pause(fb: &mut [u32], game: &Game) {
-    let w = 200;
-    let h = 128;
+    let w = 1200;
+    let h = 768;
     let x = (WIDTH - w) / 2;
     let y = (HEIGHT - h) / 2;
     panel(fb, x, y, w, h);
-    let left = x + 12;
-    text_centered(fb, WIDTH / 2, y + 8, "Pause", GOLD);
-    text(fb, left, y + 26, "Party", DIM);
-    text(fb, left, y + 40, game.player.name, CREAM);
+    let left = x + 72;
+    text_centered(fb, WIDTH / 2, y + 48, "Pause", GOLD);
+    text(fb, left, y + 156, "Party", DIM);
+    text(fb, left, y + 240, game.player.name, CREAM);
     let hp = format!("{}/{}", game.player.hp, game.player.max_hp);
-    text(fb, x + w - 12 - text_width(&hp), y + 40, &hp, CREAM);
+    text(fb, x + w - 72 - text_width(&hp), y + 240, &hp, CREAM);
     hp_bar(
         fb,
         left,
-        y + 54,
-        w - 24,
-        8,
+        y + 324,
+        w - 144,
+        48,
         game.player.hp,
         game.player.max_hp,
     );
-    text(fb, left, y + 70, "Equip", DIM);
-    let slot_w = w - 24;
-    outline(fb, left, y + 84, slot_w, 16, FRAME);
-    text(fb, left + 6, y + 88, WEAPON.name, CREAM);
+    text(fb, left, y + 420, "Equip", DIM);
+    let slot_w = w - 144;
+    outline(fb, left, y + 504, slot_w, 96, FRAME);
+    text(fb, left + 36, y + 528, WEAPON.name, CREAM);
     let bonus = format!("+{} attack", WEAPON.atk);
-    text(fb, left, y + 106, &bonus, GOLD);
+    text(fb, left, y + 636, &bonus, GOLD);
 }
 
 fn grass_color() -> u32 {
@@ -280,16 +311,25 @@ fn shade(fb: &mut [u32], keep: u32) {
 }
 
 fn panel(fb: &mut [u32], x: i32, y: i32, w: i32, h: i32) {
+    let edge = 6;
     fill(fb, x, y, w, h, FRAME);
-    fill(fb, x + 1, y + 1, w - 2, h - 2, FRAME_IN);
-    fill(fb, x + 3, y + 3, w - 6, h - 6, PANEL);
+    fill(fb, x + edge, y + edge, w - edge * 2, h - edge * 2, FRAME_IN);
+    fill(
+        fb,
+        x + edge * 3,
+        y + edge * 3,
+        w - edge * 6,
+        h - edge * 6,
+        PANEL,
+    );
 }
 
 fn outline(fb: &mut [u32], x: i32, y: i32, w: i32, h: i32, color: u32) {
-    fill(fb, x, y, w, 1, color);
-    fill(fb, x, y + h - 1, w, 1, color);
-    fill(fb, x, y, 1, h, color);
-    fill(fb, x + w - 1, y, 1, h, color);
+    let t = 6;
+    fill(fb, x, y, w, t, color);
+    fill(fb, x, y + h - t, w, t, color);
+    fill(fb, x, y, t, h, color);
+    fill(fb, x + w - t, y, t, h, color);
 }
 
 fn fill(fb: &mut [u32], x: i32, y: i32, w: i32, h: i32, color: u32) {
@@ -310,15 +350,16 @@ fn fill(fb: &mut [u32], x: i32, y: i32, w: i32, h: i32, color: u32) {
 }
 
 fn hp_bar(fb: &mut [u32], x: i32, y: i32, w: i32, h: i32, hp: i32, max: i32) {
+    let t = 6;
     fill(fb, x, y, w, h, FRAME);
-    fill(fb, x + 1, y + 1, w - 2, h - 2, HP_BG);
-    if max <= 0 || hp <= 0 {
+    fill(fb, x + t, y + t, w - t * 2, h - t * 2, HP_BG);
+    if max <= 0 || hp <= 0 || w <= t * 2 || h <= t * 2 {
         return;
     }
-    let inner = w - 2;
+    let inner = w - t * 2;
     let filled = inner * hp.min(max) / max;
     let color = if hp * 4 <= max { HP_LOW } else { HP_OK };
-    fill(fb, x + 1, y + 1, filled, h - 2, color);
+    fill(fb, x + t, y + t, filled, h - t * 2, color);
 }
 
 fn plot(fb: &mut [u32], x: i32, y: i32, color: u32) {
@@ -337,14 +378,15 @@ fn text_centered(fb: &mut [u32], cx: i32, y: i32, s: &str, color: u32) {
 }
 
 fn text_clip(fb: &mut [u32], x: i32, y: i32, s: &str, color: u32, max_x: i32) {
-    glyphs(fb, x + 1, y + 1, s, INK, max_x);
+    glyphs(fb, x + FONT_SCALE, y + FONT_SCALE, s, INK, max_x);
     glyphs(fb, x, y, s, color, max_x);
 }
 
 fn glyphs(fb: &mut [u32], x: i32, y: i32, s: &str, color: u32, max_x: i32) {
+    let step = 8 * FONT_SCALE;
     let mut cx = x;
     for ch in s.chars() {
-        if cx + 8 > max_x {
+        if cx + step > max_x {
             break;
         }
         let index = u32::from(ch);
@@ -357,16 +399,25 @@ fn glyphs(fb: &mut [u32], x: i32, y: i32, s: &str, color: u32, max_x: i32) {
             let bits = glyph[row];
             for col in 0..8 {
                 if bits & (1 << col) != 0 {
-                    plot(fb, cx + col as i32, y + row as i32, color);
+                    let row = row as i32;
+                    let col = col as i32;
+                    fill(
+                        fb,
+                        cx + col * FONT_SCALE,
+                        y + row * FONT_SCALE,
+                        FONT_SCALE,
+                        FONT_SCALE,
+                        color,
+                    );
                 }
             }
         }
-        cx += 8;
+        cx += step;
     }
 }
 
 fn text_width(s: &str) -> i32 {
-    s.chars().count() as i32 * 8
+    s.chars().count() as i32 * 8 * FONT_SCALE
 }
 
 #[cfg(test)]
@@ -375,13 +426,23 @@ mod tests {
     use crate::game::Game;
 
     #[test]
-    fn field_corner_is_grass() {
+    fn field_is_grass_with_a_solid_edge() {
         let mut fb = vec![0; (WIDTH * HEIGHT) as usize];
         draw(&mut fb, &Game::new());
-        let p = fb[(8 * WIDTH + 8) as usize];
+        assert_eq!(fb[0], BLOCKED, "top strip should be a flat color");
+        assert_eq!(
+            fb[(1068 * WIDTH) as usize],
+            BLOCKED,
+            "bottom strip should be a flat color"
+        );
+        assert_ne!(fb[(12 * WIDTH + 8) as usize], BLOCKED);
+        assert_ne!(fb[(1067 * WIDTH + 8) as usize], BLOCKED);
+        // Source pixel (8, 8) of tile (0, 0), on the centered field.
+        let p = fb[(60 * WIDTH + 48) as usize];
         let r = (p >> 16) & 255;
         let g = (p >> 8) & 255;
         let b = p & 255;
         assert!(g > r + 20 && g > b + 20, "grass pixel was {p:#08x}");
+        assert_ne!(p, BLOCKED);
     }
 }

@@ -9,17 +9,16 @@
 
 use crate::atlas::TILE;
 
-pub const WIDTH: i32 = 320;
-pub const HEIGHT: i32 = 180;
+pub const WIDTH: i32 = 1920;
+pub const HEIGHT: i32 = 1080;
 pub const MAP_W: i32 = 20;
 pub const MAP_H: i32 = 11;
+/// Field tiles and sprites are drawn at this multiple of the 16px art.
+pub const SCALE: i32 = 6;
 pub const WALK_FRAMES: u8 = 8;
 pub const TRANSITION_FRAMES: u16 = 36;
 pub const BEAT: u8 = 28;
 pub const LEAVE: u8 = 42;
-
-const _: () = assert!(WIDTH == MAP_W * TILE);
-const _: () = assert!(HEIGHT >= MAP_H * TILE);
 
 pub const TALK_LINE: &str = "Keep off my grass.";
 pub const COMMANDS: [&str; 3] = ["Attack", "Guard", "Flee"];
@@ -199,6 +198,26 @@ impl Game {
         self.walk.is_some_and(|walk| walk.t % 8 < 4)
     }
 
+    /// Top-left of the view, in field pixels. A field smaller than the view
+    /// sits centered (the origin is negative). A larger map keeps the player
+    /// in frame and stops at the edge.
+    pub fn camera(&self) -> (i32, i32) {
+        let (x, y) = self.player_px();
+        let tile = TILE * SCALE;
+        let focus_x = x * SCALE + tile / 2;
+        let focus_y = y * SCALE + tile / 2;
+        (
+            scroll_axis(focus_x, MAP_W * tile, WIDTH),
+            scroll_axis(focus_y, MAP_H * tile, HEIGHT),
+        )
+    }
+
+    /// Ground the player can stand on. A wall, or the space past the edge of
+    /// a room, is not ground and draws as a flat color.
+    pub fn ground(&self, x: i32, y: i32) -> bool {
+        x >= 0 && y >= 0 && x < MAP_W && y < MAP_H
+    }
+
     fn handle_pause(&mut self, input: &Input) -> bool {
         let open = input.pause && matches!(self.mode, Mode::Field | Mode::Talk | Mode::Battle);
         let close = matches!(self.mode, Mode::Pause(_)) && (input.pause || input.confirm);
@@ -283,11 +302,7 @@ impl Game {
     }
 
     fn tile_free(&self, x: i32, y: i32) -> bool {
-        x >= 0
-            && y >= 0
-            && x < MAP_W
-            && y < MAP_H
-            && !(self.monster_alive && x == self.mx && y == self.my)
+        self.ground(x, y) && !(self.monster_alive && x == self.mx && y == self.my)
     }
 
     fn update_battle(&mut self, input: &Input) {
@@ -412,6 +427,14 @@ impl Battle {
     }
 }
 
+fn scroll_axis(focus: i32, span: i32, view: i32) -> i32 {
+    if span <= view {
+        -(view - span) / 2
+    } else {
+        (focus - view / 2).clamp(0, span - view)
+    }
+}
+
 fn harm(atk: i32, def: i32, guard: bool) -> i32 {
     let hit = (atk - def).max(1);
     if guard {
@@ -453,6 +476,27 @@ mod tests {
         idle(game, TRANSITION_FRAMES + 2);
         assert_eq!(game.mode, Mode::Battle);
         assert!(matches!(game.battle.phase, Phase::Choose));
+    }
+
+    #[test]
+    fn this_field_fills_the_width() {
+        assert_eq!(MAP_W * TILE * SCALE, WIDTH);
+        assert_eq!(MAP_H * TILE * SCALE, 1056);
+        assert!(MAP_H * TILE * SCALE < HEIGHT);
+    }
+
+    #[test]
+    fn camera_centers_this_field_and_follows_a_larger_map() {
+        let game = Game::new();
+        let (x, y) = game.camera();
+        assert_eq!(x, 0);
+        assert_eq!(y, -((HEIGHT - MAP_H * TILE * SCALE) / 2));
+
+        assert_eq!(scroll_axis(0, 4000, WIDTH), 0);
+        assert_eq!(scroll_axis(WIDTH / 2, 4000, WIDTH), 0);
+        assert_eq!(scroll_axis(2000, 4000, WIDTH), 2000 - WIDTH / 2);
+        assert_eq!(scroll_axis(4000, 4000, WIDTH), 4000 - WIDTH);
+        assert_eq!(scroll_axis(50, 100, WIDTH), -((WIDTH - 100) / 2));
     }
 
     #[test]
