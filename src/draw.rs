@@ -10,8 +10,8 @@
 use crate::atlas::{self, ATLAS, ATLAS_W, TILE};
 use crate::font::FONT;
 use crate::game::{
-    terrain_at, Back, Game, Mode, Phase, Terrain, COMMANDS, HEIGHT, MAP_H, MAP_W, MUSHROOMS,
-    ROAD_X, SCALE, SYSTEM_ITEMS, TALK_LINE, TITLE_ITEMS, TRANSITION_FRAMES, WIDTH,
+    Back, Brush, EditPage, Game, Mode, Phase, Terrain, COMMANDS, HEIGHT, MAP_H, MAP_W, SCALE,
+    SYSTEM_ITEMS, TITLE_ITEMS, TRANSITION_FRAMES, WIDTH,
 };
 
 const CREAM: u32 = 0xF3E6C8;
@@ -53,8 +53,12 @@ pub fn draw(fb: &mut [u32], game: &Game) {
             } else {
                 let rows: Vec<(&str, Option<&str>)> =
                     TITLE_ITEMS.iter().map(|label| (*label, None)).collect();
-                draw_menu(fb, "", &rows, game.menu_cursor, game.notice);
+                draw_menu(fb, "", &rows, game.menu_cursor, game.notice.as_deref());
             }
+            return;
+        }
+        World::Edit => {
+            draw_edit(fb, game);
             return;
         }
         World::Battle => draw_battle(fb, game),
@@ -74,8 +78,22 @@ pub fn draw(fb: &mut [u32], game: &Game) {
                     "Save before quitting?",
                     &rows,
                     game.menu_cursor,
-                    game.notice,
+                    game.notice.as_deref(),
                 );
+            }
+            Mode::SaveAsk(_) => {
+                let rows = [("Overwrite", None), ("New fork", None)];
+                draw_menu(
+                    fb,
+                    "Overwrite or fork?",
+                    &rows,
+                    game.menu_cursor,
+                    game.notice.as_deref(),
+                );
+            }
+            Mode::NameSlot(_) => {
+                let rows = [(game.name_buf.as_str(), None)];
+                draw_menu(fb, "New fork", &rows, 0, game.notice.as_deref());
             }
             Mode::LoadList { .. } => draw_load(fb, game),
             Mode::Party => draw_party(fb, game),
@@ -112,6 +130,7 @@ enum World {
     Title,
     Field,
     Battle,
+    Edit,
 }
 
 fn world(mode: Mode) -> World {
@@ -120,9 +139,12 @@ fn world(mode: Mode) -> World {
         | Mode::LoadList {
             from_title: true, ..
         } => World::Title,
+        Mode::Edit => World::Edit,
         Mode::Battle
         | Mode::System(Back::Battle)
         | Mode::QuitAsk(Back::Battle)
+        | Mode::SaveAsk(Back::Battle)
+        | Mode::NameSlot(Back::Battle)
         | Mode::LoadList {
             from_title: false,
             back: Back::Battle,
@@ -143,6 +165,8 @@ fn overlay(mode: Mode) -> bool {
         mode,
         Mode::System(_)
             | Mode::QuitAsk(_)
+            | Mode::SaveAsk(_)
+            | Mode::NameSlot(_)
             | Mode::LoadList {
                 from_title: false,
                 ..
@@ -176,9 +200,9 @@ fn draw_field(fb: &mut [u32], game: &Game) {
         for tx in x0..x1 {
             let x = tx * tile - cam_x;
             let y = ty * tile - cam_y;
-            match terrain_at(tx, ty) {
+            match game.project.terrain(tx, ty) {
                 Some(Terrain::Grass) => {
-                    let id = if tx < ROAD_X {
+                    let id = if tx < game.project.road_x {
                         match tile_hash(tx, ty) % 10 {
                             0 => atlas::SPR_FLOWER,
                             1 => atlas::SPR_BLOOM,
@@ -189,16 +213,21 @@ fn draw_field(fb: &mut [u32], game: &Game) {
                     };
                     paint_tile(fb, id, x, y, grass);
                 }
+                Some(Terrain::Void) | None => fill(fb, x, y, tile, tile, BLOCKED),
+                Some(Terrain::Custom(id)) => {
+                    if !blit_sheet(fb, &game.project.sheet, i32::from(id), x, y, SCALE) {
+                        fill(fb, x, y, tile, tile, 0x6688AA);
+                    }
+                }
                 Some(terrain) => {
                     let (id, fallback) = tile_paint(terrain);
                     paint_tile(fb, id, x, y, fallback);
                 }
-                None => fill(fb, x, y, tile, tile, BLOCKED),
             }
         }
     }
-    for &(tx, ty) in &MUSHROOMS {
-        if matches!(terrain_at(tx, ty), Some(Terrain::Grass)) {
+    for &(tx, ty) in &game.project.mushrooms {
+        if matches!(game.project.terrain(tx, ty), Some(Terrain::Grass)) {
             blit(
                 fb,
                 atlas::SPR_MUSHROOM,
@@ -236,6 +265,8 @@ fn show_talk(mode: Mode) -> bool {
         Mode::Talk
             | Mode::System(Back::Talk)
             | Mode::QuitAsk(Back::Talk)
+            | Mode::SaveAsk(Back::Talk)
+            | Mode::NameSlot(Back::Talk)
             | Mode::LoadList {
                 from_title: false,
                 back: Back::Talk,
@@ -253,6 +284,7 @@ fn tile_paint(terrain: Terrain) -> (i32, u32) {
         Terrain::WallWood => (atlas::SPR_WALL_WOOD, WALL_WOOD),
         Terrain::RoofBlue => (atlas::SPR_ROOF_BLUE, ROOF_BLUE),
         Terrain::WallStone => (atlas::SPR_WALL_STONE, WALL_STONE),
+        Terrain::Void | Terrain::Custom(_) => (atlas::SPR_GRASS, BLOCKED),
     }
 }
 
@@ -284,9 +316,22 @@ fn draw_dialogue(fb: &mut [u32], game: &Game) {
     let w = WIDTH - 96;
     let h = 300;
     panel(fb, x, y, w, h);
-    text(fb, x + 60, y + 48, game.monster.name, SLIME);
-    text(fb, x + 60, y + 156, TALK_LINE, CREAM);
-    text(fb, x + w - 108, y + 156, "Z", GOLD);
+    text(fb, x + 60, y + 36, &game.monster.name, SLIME);
+    text_clip(fb, x + 60, y + 96, game.current_line(), CREAM, x + w - 48);
+    let choices = game.current_choices();
+    if choices.is_empty() {
+        text(fb, x + w - 108, y + 96, "Z", GOLD);
+        return;
+    }
+    for (i, choice) in choices.iter().enumerate().take(3) {
+        let cy = y + 168 + i as i32 * 48;
+        let selected = i == game.talk_choice;
+        if selected {
+            text(fb, x + 48, cy, ">", GOLD);
+        }
+        let color = if selected { CREAM } else { DIM };
+        text_clip(fb, x + 96, cy, &choice.label, color, x + w - 48);
+    }
 }
 
 fn draw_battle(fb: &mut [u32], game: &Game) {
@@ -350,7 +395,7 @@ fn fighter_card(
     let bar_w = 624;
     let x = if right { edge - bar_w } else { edge };
     let hp = format!("{}/{}", fighter.hp.max(0), fighter.max_hp);
-    text(fb, x, 468, fighter.name, color);
+    text(fb, x, 468, &fighter.name, color);
     text(fb, x + bar_w - text_width(&hp), 468, &hp, CREAM);
     hp_bar(fb, x, 540, bar_w, 48, fighter.hp, fighter.max_hp);
 }
@@ -366,23 +411,27 @@ fn draw_system(fb: &mut [u32], game: &Game) {
         (SYSTEM_ITEMS[4], None),
         (SYSTEM_ITEMS[5], None),
     ];
-    draw_menu(fb, "System", &rows, game.menu_cursor, game.notice);
+    draw_menu(
+        fb,
+        "System",
+        &rows,
+        game.menu_cursor,
+        game.notice.as_deref(),
+    );
 }
 
 fn draw_load(fb: &mut [u32], game: &Game) {
     if game.slots.is_empty() {
         let rows = [("No saves", None)];
-        draw_menu(fb, "Load", &rows, usize::MAX, game.notice);
+        draw_menu(fb, "Load", &rows, usize::MAX, game.notice.as_deref());
         return;
     }
-    let owned: Vec<String> = game
+    let rows: Vec<(&str, Option<&str>)> = game
         .slots
         .iter()
-        .map(|id| format!("save-{id:03}"))
+        .map(|name| (name.as_str(), None))
         .collect();
-    let rows: Vec<(&str, Option<&str>)> =
-        owned.iter().map(|label| (label.as_str(), None)).collect();
-    draw_menu(fb, "Load", &rows, game.menu_cursor, game.notice);
+    draw_menu(fb, "Load", &rows, game.menu_cursor, game.notice.as_deref());
 }
 
 fn draw_menu(
@@ -662,10 +711,275 @@ fn text_width(s: &str) -> i32 {
     s.chars().count() as i32 * 8 * FONT_SCALE
 }
 
+fn blit_sheet(
+    fb: &mut [u32],
+    sheet: &crate::project::Sheet,
+    id: i32,
+    dx: i32,
+    dy: i32,
+    scale: i32,
+) -> bool {
+    let Some(tile) = sheet.tile(id) else {
+        return false;
+    };
+    for y in 0..TILE {
+        for x in 0..TILE {
+            let i = ((y * TILE + x) * 4) as usize;
+            if tile[i + 3] < 128 {
+                continue;
+            }
+            let color = ((tile[i] as u32) << 16) | ((tile[i + 1] as u32) << 8) | tile[i + 2] as u32;
+            for sy in 0..scale {
+                for sx in 0..scale {
+                    plot(fb, dx + x * scale + sx, dy + y * scale + sy, color);
+                }
+            }
+        }
+    }
+    true
+}
+
+fn cell_color(terrain: Terrain) -> u32 {
+    match terrain {
+        Terrain::Grass => grass_color(),
+        Terrain::RoadLeft | Terrain::Road | Terrain::RoadRight => DIRT,
+        Terrain::RoofRed => ROOF_RED,
+        Terrain::WallWood => WALL_WOOD,
+        Terrain::RoofBlue => ROOF_BLUE,
+        Terrain::WallStone => WALL_STONE,
+        Terrain::Void => BLOCKED,
+        Terrain::Custom(_) => 0x6688AA,
+    }
+}
+
+fn draw_edit(fb: &mut [u32], game: &Game) {
+    fb.fill(TITLE_BG);
+    text(fb, 48, 36, "Edit", GOLD);
+    for (i, page) in EditPage::ALL.iter().enumerate() {
+        let x = 240 + i as i32 * 300;
+        let selected = *page == game.edit.page;
+        if selected {
+            fill(fb, x - 16, 24, 270, 48, SELECT);
+        }
+        text(fb, x, 36, page.name(), if selected { CREAM } else { DIM });
+    }
+    match game.edit.page {
+        EditPage::Map => draw_edit_map(fb, game),
+        EditPage::Tiles => draw_edit_tiles(fb, game),
+        EditPage::Characters => draw_edit_characters(fb, game),
+        EditPage::Dialogue => draw_edit_dialogue(fb, game),
+    }
+    if let Some(notice) = game.notice.as_deref() {
+        text(fb, 48, HEIGHT - 48, notice, GOLD);
+    }
+}
+
+fn draw_edit_map(fb: &mut [u32], game: &Game) {
+    text(fb, 48, 110, "Paint", GOLD);
+    for (i, brush) in Brush::PALETTE.iter().enumerate() {
+        let y = 170 + i as i32 * 56;
+        let selected = game.edit.brush == *brush;
+        if selected {
+            fill(fb, 36, y - 10, 400, 48, SELECT);
+            text(fb, 48, y, ">", GOLD);
+        }
+        text(fb, 96, y, brush.label(), if selected { CREAM } else { DIM });
+    }
+    let origin_x = 500;
+    let origin_y = 160;
+    let cell = 8;
+    for y in 0..MAP_H {
+        for x in 0..MAP_W {
+            let terrain = game.project.terrain(x, y).unwrap_or(Terrain::Void);
+            fill(
+                fb,
+                origin_x + x * cell,
+                origin_y + y * cell,
+                cell,
+                cell,
+                cell_color(terrain),
+            );
+        }
+    }
+    let cx = origin_x + game.edit.cx * cell;
+    let cy = origin_y + game.edit.cy * cell;
+    fill(fb, cx, cy, cell, 2, GOLD);
+    fill(fb, cx, cy + cell - 2, cell, 2, GOLD);
+    fill(fb, cx, cy, 2, cell, GOLD);
+    fill(fb, cx + cell - 2, cy, 2, cell, GOLD);
+    text(
+        fb,
+        origin_x,
+        origin_y + MAP_H * cell + 28,
+        "Arrows move    Z paints    1-7 choose a brush",
+        DIM,
+    );
+}
+
+fn draw_edit_tiles(fb: &mut [u32], game: &Game) {
+    text(fb, 48, 120, "Kenney sheet", GOLD);
+    for id in 0..atlas::SPR_COUNT {
+        blit(fb, id, 48 + id * 72, 180, 4);
+    }
+    text(fb, 48, 320, "Import a PNG path", GOLD);
+    let path = if game.edit.tile_path.is_empty() {
+        "(type a path, Z loads)".to_string()
+    } else {
+        game.edit.tile_path.clone()
+    };
+    text_clip(fb, 48, 380, &path, CREAM, WIDTH - 48);
+    let count = format!("{} imported tiles", game.project.sheet.count);
+    text(fb, 48, 460, &count, DIM);
+    let shown = game.project.sheet.count.min(16);
+    for id in 0..shown {
+        blit_sheet(fb, &game.project.sheet, id, 48 + id * 72, 540, 4);
+    }
+    text(
+        fb,
+        48,
+        680,
+        "Left and right pick an imported cell. It becomes the map brush.",
+        DIM,
+    );
+}
+
+fn draw_edit_characters(fb: &mut [u32], game: &Game) {
+    text(fb, 48, 120, "Party", GOLD);
+    let labels = [
+        "Character",
+        "Add character",
+        "Remove character",
+        "Weapon",
+        "Add skill",
+        "Add item",
+    ];
+    for (i, label) in labels.iter().enumerate() {
+        let y = 190 + i as i32 * 64;
+        if i == game.edit.row {
+            fill(fb, 36, y - 12, 520, 52, SELECT);
+            text(fb, 48, y, ">", GOLD);
+        }
+        text(
+            fb,
+            96,
+            y,
+            label,
+            if i == game.edit.row { CREAM } else { DIM },
+        );
+    }
+    let index = game
+        .edit
+        .char_index
+        .min(game.project.party.len().saturating_sub(1));
+    if let Some(character) = game.project.party.get(index) {
+        let x = 760;
+        text(fb, x, 190, &character.name, GOLD);
+        let weapon = format!("{}  +{}", character.weapon_name, character.weapon_atk);
+        text(fb, x, 270, &weapon, CREAM);
+        text(fb, x, 360, "Skills", GOLD);
+        if character.skills.is_empty() {
+            text(fb, x, 420, "(none)", DIM);
+        }
+        for (i, skill) in character.skills.iter().enumerate().take(6) {
+            text(fb, x, 420 + i as i32 * 42, skill, CREAM);
+        }
+        text(fb, x, 700, "Inventory", GOLD);
+        if character.inventory.is_empty() {
+            text(fb, x, 760, "(empty)", DIM);
+        }
+        for (i, item) in character.inventory.iter().enumerate().take(4) {
+            text(fb, x + 280, 760 + i as i32 * 42, &item.name, CREAM);
+        }
+    }
+    text(
+        fb,
+        48,
+        HEIGHT - 80,
+        "Mira stays if she is the only character.",
+        DIM,
+    );
+}
+
+fn draw_edit_dialogue(fb: &mut [u32], game: &Game) {
+    text(fb, 48, 110, "Nodes", GOLD);
+    for (i, node) in game.project.talk.nodes.iter().enumerate() {
+        let y = 170 + i as i32 * 52;
+        let selected = i == game.edit.node_index;
+        if selected {
+            fill(fb, 36, y - 10, 440, 46, SELECT);
+            text(fb, 48, y, ">", GOLD);
+        }
+        text(fb, 96, y, &node.id, if selected { CREAM } else { DIM });
+    }
+    let Some(node) = game.project.talk.nodes.get(game.edit.node_index) else {
+        text(fb, 560, 170, "No nodes", DIM);
+        return;
+    };
+    let x = 560;
+    text(fb, x, 110, &node.id, GOLD);
+    let line = if node.text.is_empty() {
+        "(no line)".to_string()
+    } else {
+        node.text.clone()
+    };
+    text_clip(fb, x, 170, &line, CREAM, WIDTH - 64);
+
+    text(fb, x, 240, "Requires", GOLD);
+    if node.require.is_empty() {
+        text(fb, x, 292, "(none)", DIM);
+    }
+    for (i, need) in node.require.iter().enumerate() {
+        let y = 292 + i as i32 * 48;
+        let state = if need.want { "on" } else { "off" };
+        text(fb, x, y, &need.flag, CREAM);
+        let color = if need.want { GOLD } else { HP_LOW };
+        text(fb, x + 460, y, state, color);
+    }
+
+    let mut y = 300 + (node.require.len().max(1) as i32) * 48 + 24;
+    text(fb, x, y, "Choices", GOLD);
+    y += 52;
+    if node.choices.is_empty() {
+        text(fb, x, y, "(none)", DIM);
+        y += 48;
+    }
+    for choice in &node.choices {
+        let dest = format!("{}  ->  {}", choice.label, choice.goto);
+        text_clip(fb, x, y, &dest, CREAM, WIDTH - 64);
+        y += 44;
+        if choice.sets.is_empty() {
+            text(fb, x + 36, y, "sets none", DIM);
+            y += 44;
+        } else {
+            for flag in &choice.sets {
+                let sets = format!("sets {flag}");
+                text(fb, x + 36, y, &sets, GOLD);
+                y += 44;
+            }
+        }
+    }
+    y += 12;
+    text(fb, x, y, "Battle", GOLD);
+    y += 52;
+    if let Some(battle) = &node.battle {
+        let lead = format!("{} on {}", battle.entity, battle.map);
+        text(fb, x, y, &lead, CREAM);
+    } else {
+        text(fb, x, y, "no battle", DIM);
+    }
+    text(
+        fb,
+        48,
+        HEIGHT - 80,
+        "Left Right changes the node or a required flag. Z adds a flag.",
+        DIM,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::game::{isolated_dir, Game, BUILDINGS};
+    use crate::game::{isolated_dir, terrain_at, Game, BUILDINGS, ROAD_X};
 
     fn field() -> Game {
         let mut game = Game::with_save_dir(isolated_dir());

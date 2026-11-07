@@ -1,28 +1,25 @@
 //! Walk a field, talk, and fight.
 //!
-//! The map is 120x70 tiles drawn at 2x, so a 1920x1080 view shows about
-//! 60x33 tiles. The camera follows Mira and stops at the edges. The west
-//! and center are grass. A dirt road on the east runs north into two
-//! buildings. The game opens on a title screen. Esc is the system menu
-//! and Tab is the party menu.
-//!
-//! Attack damage is `max(1, atk - def)`. Guard halves that damage, to a
-//! minimum of 1. The player's attack includes the equipped weapon.
-//!
-//! Win removes the monster. Flee leaves both of you as you are. A loss
-//! restores the player's HP only; the monster stays, at the HP it had,
-//! so the fight can be tried again.
+//! The 120x70 map, the town, Mira, and the slime's branching talk come from
+//! the project files. Esc is the system menu. Tab is the party menu. Edit
+//! mode is only opened from the title.
 
 use crate::atlas::TILE;
+use crate::project::import_png;
+#[cfg(test)]
+use crate::project::{default_project, Building};
+pub use crate::project::{
+    BattleLink, Character, Choice, Item, Need, Node, Project, Terrain, MAP_H, MAP_W,
+};
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const WIDTH: i32 = 1920;
 pub const HEIGHT: i32 = 1080;
-pub const MAP_W: i32 = 120;
-pub const MAP_H: i32 = 70;
 /// Field tiles and sprites are drawn at this multiple of the 16px art.
 /// 2x is 32px per tile, so the 1920x1080 view shows 60 x 33 tiles.
 pub const SCALE: i32 = 2;
@@ -31,23 +28,33 @@ pub const TRANSITION_FRAMES: u16 = 36;
 pub const BEAT: u8 = 28;
 pub const LEAVE: u8 = 42;
 
+#[cfg(test)]
 pub const TALK_LINE: &str = "Keep off my grass.";
 pub const COMMANDS: [&str; 3] = ["Attack", "Guard", "Flee"];
+#[cfg(test)]
 pub const WEAPON_NAME: &str = "Short Sword";
+#[cfg(test)]
 pub const WEAPON_ATK: i32 = 3;
 
+#[cfg(test)]
 pub const START_X: i32 = 40;
+#[cfg(test)]
 pub const START_Y: i32 = 40;
+#[cfg(test)]
 pub const SLIME_X: i32 = 48;
+#[cfg(test)]
 pub const SLIME_Y: i32 = 35;
 
-/// North-south dirt road on the east side. It stops at the south edge of town.
+#[cfg(test)]
 pub const ROAD_X: i32 = 99;
+#[cfg(test)]
 pub const ROAD_W: i32 = 3;
+#[cfg(test)]
 pub const ROAD_Y0: i32 = 14;
+#[cfg(test)]
 pub const ROAD_Y1: i32 = 62;
 
-pub const TITLE_ITEMS: [&str; 4] = ["Continue", "Load Game", "New Game", "Quit"];
+pub const TITLE_ITEMS: [&str; 5] = ["Continue", "Load Game", "New Game", "Edit", "Quit"];
 pub const SYSTEM_ITEMS: [&str; 6] = [
     "Save",
     "Load",
@@ -63,20 +70,11 @@ const AUDIO_ITEM: usize = 2;
 const RESOLUTION_ITEM: usize = 3;
 const SAVE_QUIT_ITEM: usize = 4;
 const QUIT_ITEM: usize = 5;
+const EDIT_ITEM: usize = 3;
 
 pub const RESOLUTIONS: [(u32, u32); 4] = [(1280, 720), (1600, 900), (1920, 1080), (2560, 1440)];
 
-/// Two buildings side by side, north of the road. `wood` picks the tile set.
-#[derive(Clone, Copy, Debug)]
-pub struct Building {
-    pub x: i32,
-    pub y: i32,
-    pub w: i32,
-    pub h: i32,
-    pub roof_rows: i32,
-    pub wood: bool,
-}
-
+#[cfg(test)]
 pub const BUILDINGS: [Building; 2] = [
     Building {
         x: 93,
@@ -96,37 +94,156 @@ pub const BUILDINGS: [Building; 2] = [
     },
 ];
 
+#[cfg(test)]
 pub const MUSHROOMS: [(i32, i32); 4] = [(22, 38), (30, 32), (55, 44), (36, 50)];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Terrain {
+pub enum EditPage {
+    Map,
+    Tiles,
+    Characters,
+    Dialogue,
+}
+
+impl EditPage {
+    pub const ALL: [EditPage; 4] = [
+        EditPage::Map,
+        EditPage::Tiles,
+        EditPage::Characters,
+        EditPage::Dialogue,
+    ];
+
+    fn next(self) -> Self {
+        Self::ALL[(self.index() + 1) % Self::ALL.len()]
+    }
+
+    fn prev(self) -> Self {
+        Self::ALL[(self.index() + Self::ALL.len() - 1) % Self::ALL.len()]
+    }
+
+    pub fn index(self) -> usize {
+        Self::ALL.iter().position(|page| *page == self).unwrap_or(0)
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            EditPage::Map => "Map",
+            EditPage::Tiles => "Tiles",
+            EditPage::Characters => "Characters",
+            EditPage::Dialogue => "Dialogue",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Brush {
     Grass,
-    RoadLeft,
     Road,
-    RoadRight,
-    RoofRed,
     WallWood,
-    RoofBlue,
     WallStone,
+    HouseWood,
+    HouseStone,
+    Void,
+    Custom(u16),
+}
+
+impl Brush {
+    pub const PALETTE: [Brush; 7] = [
+        Brush::Grass,
+        Brush::Road,
+        Brush::WallWood,
+        Brush::WallStone,
+        Brush::HouseWood,
+        Brush::HouseStone,
+        Brush::Void,
+    ];
+
+    pub fn from_digit(n: u8) -> Option<Self> {
+        Some(match n {
+            1 => Brush::Grass,
+            2 => Brush::Road,
+            3 => Brush::WallWood,
+            4 => Brush::WallStone,
+            5 => Brush::HouseWood,
+            6 => Brush::HouseStone,
+            7 => Brush::Void,
+            _ => return None,
+        })
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Brush::Grass => "1 Grass",
+            Brush::Road => "2 Road",
+            Brush::WallWood => "3 Wood wall",
+            Brush::WallStone => "4 Stone wall",
+            Brush::HouseWood => "5 Wood house",
+            Brush::HouseStone => "6 Stone house",
+            Brush::Void => "7 Void",
+            Brush::Custom(_) => "Imported tile",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TypeTarget {
+    None,
+    Weapon,
+    Require(usize),
+    SetFlag(usize, usize),
+    BattleEntity,
+    BattleMap,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiaRow {
+    Node,
+    Require(usize),
+    AddRequire,
+    Choice(usize),
+    SetFlag(usize, usize),
+    AddSet(usize),
+    AddChoice,
+    ToggleBattle,
+    BattleEntity,
+    BattleMap,
+    AddNode,
 }
 
 #[derive(Clone, Debug)]
-pub struct Item {
-    pub name: String,
+pub struct EditState {
+    pub page: EditPage,
+    pub brush: Brush,
+    pub cx: i32,
+    pub cy: i32,
+    pub row: usize,
+    pub tile_path: String,
+    pub char_index: usize,
+    pub node_index: usize,
+    pub custom: Option<u16>,
+    type_target: TypeTarget,
+}
+
+impl Default for EditState {
+    fn default() -> Self {
+        Self {
+            page: EditPage::Map,
+            brush: Brush::Grass,
+            cx: 96,
+            cy: 9,
+            row: 0,
+            tile_path: String::new(),
+            char_index: 0,
+            node_index: 0,
+            custom: None,
+            type_target: TypeTarget::None,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
-pub struct Character {
-    pub name: String,
-    pub weapon_name: String,
-    pub weapon_atk: i32,
-    pub inventory: Vec<Item>,
-    pub skills: Vec<String>,
-}
-
-#[derive(Clone, Copy, Debug)]
 pub struct Fighter {
-    pub name: &'static str,
+    pub name: String,
     pub hp: i32,
     pub max_hp: i32,
     pub atk: i32,
@@ -135,15 +252,18 @@ pub struct Fighter {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Input {
-    /// Held direction. -1, 0, or 1. Up and left are negative.
     pub held_x: i32,
     pub held_y: i32,
-    /// One-shot direction from a key press. Cleared by the caller each frame.
     pub tap_x: i32,
     pub tap_y: i32,
     pub confirm: bool,
     pub pause: bool,
     pub tab: bool,
+    pub backspace: bool,
+    pub page_left: bool,
+    pub page_right: bool,
+    pub text: Option<char>,
+    pub digit: Option<u8>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -163,9 +283,12 @@ pub enum Mode {
     Battle,
     System(Back),
     QuitAsk(Back),
+    SaveAsk(Back),
+    NameSlot(Back),
     Party,
     Skills,
     Inventory,
+    Edit,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -199,6 +322,7 @@ struct Walk {
 }
 
 struct SaveData {
+    name: Option<String>,
     px: Option<i32>,
     py: Option<i32>,
     hp: Option<i32>,
@@ -211,7 +335,14 @@ struct SaveData {
     volume: Option<u8>,
     width: Option<u32>,
     height: Option<u32>,
+    flags: BTreeSet<String>,
     characters: Vec<Character>,
+}
+
+struct SlotHead {
+    name: String,
+    stamp: u64,
+    path: PathBuf,
 }
 
 pub struct Game {
@@ -229,68 +360,52 @@ pub struct Game {
     pub volume: u8,
     pub window_w: u32,
     pub window_h: u32,
-    pub notice: Option<&'static str>,
+    pub notice: Option<String>,
     pub characters: Vec<Character>,
-    pub slots: Vec<u32>,
+    pub slots: Vec<String>,
+    pub project: Project,
+    pub flags: BTreeSet<String>,
+    pub slot_name: Option<String>,
+    pub talk_node: usize,
+    pub talk_choice: usize,
+    pub edit: EditState,
+    pub name_buf: String,
     walk: Option<Walk>,
     queued: Option<(i32, i32)>,
     quit: bool,
     save_dir: PathBuf,
+    project_dir: Option<PathBuf>,
 }
 
+#[cfg(test)]
 pub fn terrain_at(x: i32, y: i32) -> Option<Terrain> {
-    if x < 0 || y < 0 || x >= MAP_W || y >= MAP_H {
-        return None;
-    }
-    for building in BUILDINGS {
-        if x >= building.x
-            && x < building.x + building.w
-            && y >= building.y
-            && y < building.y + building.h
-        {
-            let roof = y < building.y + building.roof_rows;
-            return Some(match (building.wood, roof) {
-                (true, true) => Terrain::RoofRed,
-                (true, false) => Terrain::WallWood,
-                (false, true) => Terrain::RoofBlue,
-                (false, false) => Terrain::WallStone,
-            });
-        }
-    }
-    if x >= ROAD_X && x < ROAD_X + ROAD_W && y >= ROAD_Y0 && y < ROAD_Y1 {
-        return Some(match x - ROAD_X {
-            0 => Terrain::RoadLeft,
-            1 => Terrain::Road,
-            _ => Terrain::RoadRight,
-        });
-    }
-    Some(Terrain::Grass)
+    default_project().terrain(x, y)
 }
 
+#[cfg(test)]
 pub fn ground_at(x: i32, y: i32) -> bool {
-    matches!(
-        terrain_at(x, y),
-        Some(Terrain::Grass | Terrain::RoadLeft | Terrain::Road | Terrain::RoadRight)
-    )
+    default_project().walkable(x, y)
 }
 
 impl Game {
     pub fn new() -> Self {
-        Self::with_save_dir(default_save_dir())
+        let (project, dir) = Project::load();
+        Self::boot(default_save_dir(), dir, project)
     }
 
+    #[cfg(test)]
     pub fn with_save_dir(dir: impl Into<PathBuf>) -> Self {
-        let mut game = Self::fresh(dir.into());
-        game.load_settings();
-        game
+        Self::boot(dir.into(), None, Project::embedded())
     }
 
     pub fn start_new_game(&mut self) {
+        let project = self.project.clone();
         let volume = self.volume;
         let window_w = self.window_w;
         let window_h = self.window_h;
         let save_dir = self.save_dir.clone();
-        *self = Self::fresh(save_dir);
+        let project_dir = self.project_dir.clone();
+        *self = Self::from_project(save_dir, project_dir, project);
         self.volume = volume;
         self.window_w = window_w;
         self.window_h = window_h;
@@ -306,8 +421,11 @@ impl Game {
             Mode::LoadList { .. } => self.update_load(input),
             Mode::System(_) => self.update_system(input),
             Mode::QuitAsk(_) => self.update_quit_ask(input),
+            Mode::SaveAsk(_) => self.update_save_ask(input),
+            Mode::NameSlot(_) => self.update_name(input),
             Mode::Party => self.update_party(input),
             Mode::Skills | Mode::Inventory => self.update_submenu(input),
+            Mode::Edit => self.update_edit(input),
             Mode::Field | Mode::Talk | Mode::Battle | Mode::Transition { .. } => {
                 self.update_world(input);
             }
@@ -322,7 +440,6 @@ impl Game {
         (self.window_w, self.window_h)
     }
 
-    /// Master volume as a gain from 0 to 1. Menu changes update it the same frame.
     pub fn master_gain(&self) -> f32 {
         f32::from(self.volume) / 10.0
     }
@@ -357,8 +474,6 @@ impl Game {
         self.walk.is_some_and(|walk| walk.t % 8 < 4)
     }
 
-    /// Top-left of the view, in screen pixels. The camera keeps the player
-    /// in frame and stops at the edge of the map.
     pub fn camera(&self) -> (i32, i32) {
         let (x, y) = self.player_px();
         let tile = TILE * SCALE;
@@ -370,48 +485,126 @@ impl Game {
         )
     }
 
-    /// Ground the player can stand on. A building, or the space past the
-    /// edge of the map, is not ground and draws as a flat color when no
-    /// tile covers it.
     pub fn ground(&self, x: i32, y: i32) -> bool {
-        ground_at(x, y)
+        self.project.walkable(x, y)
     }
 
-    fn fresh(save_dir: PathBuf) -> Self {
+    pub fn current_line(&self) -> &str {
+        self.project
+            .talk
+            .nodes
+            .get(self.talk_node)
+            .map(|node| node.text.as_str())
+            .unwrap_or("")
+    }
+
+    pub fn current_choices(&self) -> &[Choice] {
+        self.project
+            .talk
+            .nodes
+            .get(self.talk_node)
+            .map(|node| node.choices.as_slice())
+            .unwrap_or(&[])
+    }
+
+    pub fn dialogue_rows(&self) -> Vec<DiaRow> {
+        let Some(node) = self.project.talk.nodes.get(self.edit.node_index) else {
+            return vec![DiaRow::AddNode];
+        };
+        let mut rows = vec![DiaRow::Node];
+        for index in 0..node.require.len() {
+            rows.push(DiaRow::Require(index));
+        }
+        rows.push(DiaRow::AddRequire);
+        for index in 0..node.choices.len() {
+            rows.push(DiaRow::Choice(index));
+            for flag in 0..node.choices[index].sets.len() {
+                rows.push(DiaRow::SetFlag(index, flag));
+            }
+            rows.push(DiaRow::AddSet(index));
+        }
+        rows.push(DiaRow::AddChoice);
+        rows.push(DiaRow::ToggleBattle);
+        if node.battle.is_some() {
+            rows.push(DiaRow::BattleEntity);
+            rows.push(DiaRow::BattleMap);
+        }
+        rows.push(DiaRow::AddNode);
+        rows
+    }
+
+    pub fn import_tiles(&mut self, path: &Path) -> Result<i32, String> {
+        let sheet = import_png(path)?;
+        let count = sheet.count;
+        self.project.sheet = sheet;
+        self.project.dirty = true;
+        if count > 0 {
+            self.edit.custom = Some(0);
+            self.edit.brush = Brush::Custom(0);
+        }
+        Ok(count)
+    }
+
+    fn boot(save_dir: PathBuf, project_dir: Option<PathBuf>, project: Project) -> Self {
+        let mut game = Self::from_project(save_dir, project_dir, project);
+        game.load_settings();
+        game
+    }
+
+    fn from_project(save_dir: PathBuf, project_dir: Option<PathBuf>, project: Project) -> Self {
+        let lead = project
+            .party
+            .first()
+            .cloned()
+            .unwrap_or_else(Character::mira);
+        let characters = if project.party.is_empty() {
+            vec![lead.clone()]
+        } else {
+            project.party.clone()
+        };
+        let lead = characters[0].clone();
         Self {
             mode: Mode::Title,
             player: Fighter {
-                name: "Mira",
-                hp: 20,
-                max_hp: 20,
-                atk: 4,
-                def: 2,
+                name: lead.name.clone(),
+                hp: lead.hp,
+                max_hp: lead.max_hp.max(1),
+                atk: lead.atk,
+                def: lead.def,
             },
             monster: Fighter {
-                name: "Slime",
-                hp: 12,
-                max_hp: 12,
-                atk: 5,
-                def: 1,
+                name: project.slime_name.clone(),
+                hp: project.slime_hp,
+                max_hp: project.slime_max.max(1),
+                atk: project.slime_atk,
+                def: project.slime_def,
             },
             monster_alive: true,
-            px: START_X,
-            py: START_Y,
-            mx: SLIME_X,
-            my: SLIME_Y,
-            battle: Battle::fresh("Slime"),
+            px: project.start_x,
+            py: project.start_y,
+            mx: project.slime_x,
+            my: project.slime_y,
+            battle: Battle::fresh(&project.slime_name),
             menu_cursor: 0,
             party_index: 0,
             volume: 10,
             window_w: WIDTH as u32,
             window_h: HEIGHT as u32,
             notice: None,
-            characters: vec![mira()],
+            characters,
             slots: Vec::new(),
+            project,
+            flags: BTreeSet::new(),
+            slot_name: None,
+            talk_node: 0,
+            talk_choice: 0,
+            edit: EditState::default(),
+            name_buf: String::new(),
             walk: None,
             queued: None,
             quit: false,
             save_dir,
+            project_dir,
         }
     }
 
@@ -426,11 +619,16 @@ impl Game {
         match self.menu_cursor {
             0 => {
                 if !self.load_newest() {
-                    self.notice = Some("No save.");
+                    self.notice = Some("No save.".into());
                 }
             }
             1 => self.open_load(true, Back::Field),
             2 => self.start_new_game(),
+            EDIT_ITEM => {
+                self.edit = EditState::default();
+                self.notice = None;
+                self.mode = Mode::Edit;
+            }
             _ => self.quit = true,
         }
     }
@@ -453,9 +651,9 @@ impl Game {
         }
         if input.confirm {
             let index = self.menu_cursor.min(self.slots.len() - 1);
-            let id = self.slots[index];
-            if !self.load_id(id) {
-                self.notice = Some("Save failed.");
+            let name = self.slots[index].clone();
+            if !self.load_name(&name) {
+                self.notice = Some("Save failed.".into());
             }
         }
     }
@@ -495,18 +693,16 @@ impl Game {
         }
         match self.menu_cursor {
             SAVE_ITEM => {
-                self.notice = if self.write_save().is_ok() {
-                    Some("Saved.")
-                } else {
-                    Some("Save failed.")
-                };
+                self.menu_cursor = 0;
+                self.notice = None;
+                self.mode = Mode::SaveAsk(back);
             }
             LOAD_ITEM => self.open_load(false, back),
             SAVE_QUIT_ITEM => {
-                if self.write_save().is_ok() {
+                if self.overwrite_current().is_ok() {
                     self.quit = true;
                 } else {
-                    self.notice = Some("Save failed.");
+                    self.notice = Some("Save failed.".into());
                 }
             }
             QUIT_ITEM => {
@@ -536,13 +732,86 @@ impl Game {
             return;
         }
         if self.menu_cursor == 0 {
-            if self.write_save().is_ok() {
+            if self.overwrite_current().is_ok() {
                 self.quit = true;
             } else {
-                self.notice = Some("Save failed.");
+                self.notice = Some("Save failed.".into());
             }
         } else {
             self.quit = true;
+        }
+    }
+
+    fn update_save_ask(&mut self, input: &Input) {
+        let back = match self.mode {
+            Mode::SaveAsk(back) => back,
+            _ => return,
+        };
+        if input.pause {
+            self.menu_cursor = SAVE_ITEM;
+            self.notice = None;
+            self.mode = Mode::System(back);
+            return;
+        }
+        if input.tap_y != 0 {
+            self.notice = None;
+            self.step_cursor(input.tap_y, 2);
+        }
+        if !input.confirm {
+            return;
+        }
+        if self.menu_cursor == 0 {
+            self.notice = match self.overwrite_current() {
+                Ok(_) => Some("Saved.".into()),
+                Err(_) => Some("Save failed.".into()),
+            };
+            self.menu_cursor = SAVE_ITEM;
+            self.mode = Mode::System(back);
+        } else {
+            self.name_buf = match &self.slot_name {
+                Some(name) => format!("{name} fork"),
+                None => "Fork".into(),
+            };
+            self.notice = None;
+            self.mode = Mode::NameSlot(back);
+        }
+    }
+
+    fn update_name(&mut self, input: &Input) {
+        let back = match self.mode {
+            Mode::NameSlot(back) => back,
+            _ => return,
+        };
+        if input.pause {
+            self.notice = None;
+            self.mode = Mode::SaveAsk(back);
+            return;
+        }
+        if let Some(ch) = input.text {
+            if self.name_buf.chars().count() < 24
+                && (ch.is_ascii_alphanumeric() || ch == ' ' || ch == '-')
+            {
+                self.name_buf.push(ch);
+            }
+        }
+        if input.backspace {
+            self.name_buf.pop();
+        }
+        if !input.confirm {
+            return;
+        }
+        let name = self.name_buf.trim().to_string();
+        if name.is_empty() {
+            self.notice = Some("Need a name.".into());
+            return;
+        }
+        match self.fork_named(&name) {
+            Ok(_) => {
+                self.notice = Some("Forked.".into());
+                self.menu_cursor = SAVE_ITEM;
+                self.mode = Mode::System(back);
+            }
+            Err(_) => self.notice = Some("Save failed.".into()),
         }
     }
 
@@ -598,16 +867,12 @@ impl Game {
             Mode::Field => {
                 if input.confirm && self.near_monster() {
                     self.queued = None;
-                    self.mode = Mode::Talk;
+                    self.open_talk();
                 } else {
                     self.move_player(input);
                 }
             }
-            Mode::Talk => {
-                if input.confirm {
-                    self.begin_fight();
-                }
-            }
+            Mode::Talk => self.update_talk(input),
             Mode::Transition { frame } => {
                 let next = frame + 1;
                 if next >= TRANSITION_FRAMES {
@@ -618,6 +883,478 @@ impl Game {
             }
             Mode::Battle => self.update_battle(input),
             _ => {}
+        }
+    }
+
+    fn update_edit(&mut self, input: &Input) {
+        if self.edit.type_target != TypeTarget::None {
+            self.type_edit(input);
+            return;
+        }
+        if input.pause {
+            self.leave_edit();
+            return;
+        }
+        if input.page_right {
+            self.edit.page = self.edit.page.next();
+            self.edit.row = 0;
+            self.notice = None;
+            return;
+        }
+        if input.page_left {
+            self.edit.page = self.edit.page.prev();
+            self.edit.row = 0;
+            self.notice = None;
+            return;
+        }
+        match self.edit.page {
+            EditPage::Map => self.edit_map(input),
+            EditPage::Tiles => self.edit_tiles(input),
+            EditPage::Characters => self.edit_characters(input),
+            EditPage::Dialogue => self.edit_dialogue(input),
+        }
+    }
+
+    fn leave_edit(&mut self) {
+        if self.project.dirty {
+            if let Some(dir) = self.project_dir.clone() {
+                if self.project.write_dir(&dir).is_ok() {
+                    self.project.dirty = false;
+                }
+            }
+        }
+        self.menu_cursor = EDIT_ITEM;
+        self.notice = None;
+        self.mode = Mode::Title;
+    }
+
+    fn edit_map(&mut self, input: &Input) {
+        if let Some(digit) = input.digit {
+            if let Some(brush) = Brush::from_digit(digit) {
+                self.edit.brush = brush;
+            }
+        }
+        if input.tap_x != 0 || input.tap_y != 0 {
+            self.edit.cx = (self.edit.cx + input.tap_x.signum()).clamp(0, MAP_W - 1);
+            self.edit.cy = (self.edit.cy + input.tap_y.signum()).clamp(0, MAP_H - 1);
+        }
+        if input.confirm {
+            self.paint();
+        }
+    }
+
+    fn paint(&mut self) {
+        let x = self.edit.cx;
+        let y = self.edit.cy;
+        match self.edit.brush {
+            Brush::Grass => self.project.set_terrain(x, y, Terrain::Grass),
+            Brush::Road => self.paint_road(x, y),
+            Brush::WallWood => self.project.set_terrain(x, y, Terrain::WallWood),
+            Brush::WallStone => self.project.set_terrain(x, y, Terrain::WallStone),
+            Brush::HouseWood => self.stamp_house(x, y, true),
+            Brush::HouseStone => self.stamp_house(x, y, false),
+            Brush::Void => self.project.set_terrain(x, y, Terrain::Void),
+            Brush::Custom(id) => self.project.set_terrain(x, y, Terrain::Custom(id)),
+        }
+    }
+
+    fn paint_road(&mut self, x: i32, y: i32) {
+        self.project.set_terrain(x, y, Terrain::Road);
+        let mut x0 = x;
+        while x0 > 0 && self.project.is_road(x0 - 1, y) {
+            x0 -= 1;
+        }
+        let mut x1 = x;
+        while x1 + 1 < MAP_W && self.project.is_road(x1 + 1, y) {
+            x1 += 1;
+        }
+        let len = x1 - x0 + 1;
+        for i in 0..len {
+            let kind = if len == 1 {
+                Terrain::Road
+            } else if i == 0 {
+                Terrain::RoadLeft
+            } else if i + 1 == len {
+                Terrain::RoadRight
+            } else {
+                Terrain::Road
+            };
+            self.project.set_terrain(x0 + i, y, kind);
+        }
+    }
+
+    fn stamp_house(&mut self, x: i32, y: i32, wood: bool) {
+        for dy in 0..8 {
+            for dx in 0..7 {
+                let terrain = if dy < 3 {
+                    if wood {
+                        Terrain::RoofRed
+                    } else {
+                        Terrain::RoofBlue
+                    }
+                } else if wood {
+                    Terrain::WallWood
+                } else {
+                    Terrain::WallStone
+                };
+                self.project.set_terrain(x + dx, y + dy, terrain);
+            }
+        }
+    }
+
+    fn edit_tiles(&mut self, input: &Input) {
+        if let Some(ch) = input.text {
+            if is_path_char(ch) && self.edit.tile_path.chars().count() < 180 {
+                self.edit.tile_path.push(ch);
+            }
+        }
+        if input.backspace {
+            self.edit.tile_path.pop();
+        }
+        if input.tap_x != 0 && self.project.sheet.count > 0 {
+            let count = self.project.sheet.count as i32;
+            let cur = i32::from(self.edit.custom.unwrap_or(0));
+            let next = (cur + input.tap_x.signum()).rem_euclid(count) as u16;
+            self.edit.custom = Some(next);
+            self.edit.brush = Brush::Custom(next);
+        }
+        if !input.confirm {
+            return;
+        }
+        let path = self.edit.tile_path.clone();
+        match self.import_tiles(Path::new(&path)) {
+            Ok(count) => self.notice = Some(format!("{count} tiles")),
+            Err(err) => self.notice = Some(err),
+        }
+    }
+
+    fn edit_characters(&mut self, input: &Input) {
+        let len = 6;
+        if input.tap_y != 0 {
+            self.step_edit_row(input.tap_y, len);
+        }
+        if self.edit.row == 0 && input.tap_x != 0 && !self.project.party.is_empty() {
+            let count = self.project.party.len() as i32;
+            let next = self.edit.char_index as i32 + input.tap_x.signum();
+            self.edit.char_index = next.rem_euclid(count) as usize;
+        }
+        if !input.confirm {
+            return;
+        }
+        match self.edit.row {
+            1 => self.add_character(),
+            2 => self.remove_character(),
+            3 => self.edit.type_target = TypeTarget::Weapon,
+            4 => self.add_skill(),
+            5 => self.add_item(),
+            _ => {}
+        }
+    }
+
+    fn add_character(&mut self) {
+        let ally = Character::ally(self.project.party.len());
+        self.project.party.push(ally);
+        self.project.dirty = true;
+        self.edit.char_index = self.project.party.len() - 1;
+        self.sync_party();
+    }
+
+    fn remove_character(&mut self) {
+        if self.project.party.len() == 1 && self.project.party[0].name == "Mira" {
+            self.notice = Some("Mira stays.".into());
+            return;
+        }
+        if self.project.party.len() <= 1 {
+            self.notice = Some("Need a character.".into());
+            return;
+        }
+        let index = self.edit.char_index.min(self.project.party.len() - 1);
+        self.project.party.remove(index);
+        self.edit.char_index = self.edit.char_index.min(self.project.party.len() - 1);
+        self.project.dirty = true;
+        self.notice = None;
+        self.sync_party();
+    }
+
+    fn add_skill(&mut self) {
+        let index = self.edit.char_index.min(self.project.party.len() - 1);
+        self.project.party[index].skills.push("New Skill".into());
+        self.project.dirty = true;
+        self.sync_party();
+    }
+
+    fn add_item(&mut self) {
+        let index = self.edit.char_index.min(self.project.party.len() - 1);
+        self.project.party[index].inventory.push(Item {
+            name: "Herb".into(),
+        });
+        self.project.dirty = true;
+        self.sync_party();
+    }
+
+    fn sync_party(&mut self) {
+        self.characters = self.project.party.clone();
+        if self.party_index >= self.characters.len() {
+            self.party_index = 0;
+        }
+    }
+
+    fn edit_dialogue(&mut self, input: &Input) {
+        let len = self.dialogue_rows().len();
+        if len == 0 {
+            return;
+        }
+        if self.edit.row >= len {
+            self.edit.row = 0;
+        }
+        if input.tap_y != 0 {
+            self.step_edit_row(input.tap_y, len);
+        }
+        let row = self.dialogue_rows()[self.edit.row.min(self.dialogue_rows().len() - 1)];
+        if input.tap_x != 0 {
+            self.edit_dialogue_side(row, input.tap_x);
+            return;
+        }
+        if input.confirm {
+            self.edit_dialogue_confirm(row);
+        }
+    }
+
+    fn edit_dialogue_side(&mut self, row: DiaRow, tap_x: i32) {
+        match row {
+            DiaRow::Node => {
+                let count = self.project.talk.nodes.len() as i32;
+                if count == 0 {
+                    return;
+                }
+                let next = self.edit.node_index as i32 + tap_x.signum();
+                self.edit.node_index = next.rem_euclid(count) as usize;
+                self.edit.row = 0;
+            }
+            DiaRow::Require(index) => {
+                if let Some(need) = self.project.talk.nodes[self.edit.node_index]
+                    .require
+                    .get_mut(index)
+                {
+                    need.want = !need.want;
+                    self.project.dirty = true;
+                }
+            }
+            DiaRow::Choice(index) => {
+                let dests = self.destinations();
+                if dests.is_empty() {
+                    return;
+                }
+                let current = self.project.talk.nodes[self.edit.node_index].choices[index]
+                    .goto
+                    .clone();
+                let pos = dests.iter().position(|id| id == &current).unwrap_or(0);
+                let next = if tap_x > 0 {
+                    (pos + 1) % dests.len()
+                } else {
+                    (pos + dests.len() - 1) % dests.len()
+                };
+                self.project.talk.nodes[self.edit.node_index].choices[index].goto =
+                    dests[next].clone();
+                self.project.dirty = true;
+            }
+            _ => {}
+        }
+    }
+
+    fn edit_dialogue_confirm(&mut self, row: DiaRow) {
+        let index = self.edit.node_index;
+        match row {
+            DiaRow::AddRequire => {
+                self.project.talk.nodes[index].require.push(Need {
+                    flag: "flag".into(),
+                    want: true,
+                });
+                self.project.dirty = true;
+            }
+            DiaRow::AddSet(choice) => {
+                if let Some(choice) = self.project.talk.nodes[index].choices.get_mut(choice) {
+                    choice.sets.push("flag".into());
+                    self.project.dirty = true;
+                }
+            }
+            DiaRow::AddChoice => {
+                self.project.talk.nodes[index].choices.push(Choice {
+                    label: "Next".into(),
+                    goto: "end".into(),
+                    sets: Vec::new(),
+                });
+                self.project.dirty = true;
+            }
+            DiaRow::ToggleBattle => {
+                let node = &mut self.project.talk.nodes[index];
+                if node.battle.is_some() {
+                    node.battle = None;
+                } else {
+                    node.battle = Some(BattleLink {
+                        entity: "slime".into(),
+                        map: self.project.map_name.clone(),
+                    });
+                }
+                self.project.dirty = true;
+            }
+            DiaRow::AddNode => {
+                let id = format!("line{}", self.project.talk.nodes.len());
+                self.project.talk.nodes.push(Node {
+                    id,
+                    text: "...".into(),
+                    require: Vec::new(),
+                    choices: Vec::new(),
+                    battle: None,
+                });
+                self.edit.node_index = self.project.talk.nodes.len() - 1;
+                self.edit.row = 0;
+                self.project.dirty = true;
+            }
+            DiaRow::Require(flag) => self.edit.type_target = TypeTarget::Require(flag),
+            DiaRow::SetFlag(choice, flag) => {
+                self.edit.type_target = TypeTarget::SetFlag(choice, flag);
+            }
+            DiaRow::BattleEntity => self.edit.type_target = TypeTarget::BattleEntity,
+            DiaRow::BattleMap => self.edit.type_target = TypeTarget::BattleMap,
+            DiaRow::Node | DiaRow::Choice(_) => {}
+        }
+    }
+
+    fn destinations(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .project
+            .talk
+            .nodes
+            .iter()
+            .map(|node| node.id.clone())
+            .collect();
+        ids.push("end".into());
+        ids
+    }
+
+    fn type_edit(&mut self, input: &Input) {
+        if input.pause {
+            self.edit.type_target = TypeTarget::None;
+            return;
+        }
+        if let Some(ch) = input.text {
+            if ch.is_ascii_graphic() && ch != ' ' || (ch == ' ' && self.allows_space()) {
+                self.push_type_char(ch);
+            }
+        }
+        if input.backspace {
+            self.pop_type_char();
+        }
+        if input.confirm {
+            self.edit.type_target = TypeTarget::None;
+        }
+    }
+
+    fn allows_space(&self) -> bool {
+        matches!(self.edit.type_target, TypeTarget::Weapon)
+    }
+
+    fn push_type_char(&mut self, ch: char) {
+        let target = self.edit.type_target;
+        let node = self.edit.node_index;
+        let char_index = self.edit.char_index;
+        match target {
+            TypeTarget::Weapon => {
+                let index = char_index.min(self.project.party.len().saturating_sub(1));
+                if self.project.party[index].weapon_name.chars().count() < 24 {
+                    self.project.party[index].weapon_name.push(ch);
+                    self.project.dirty = true;
+                    self.sync_party();
+                }
+            }
+            TypeTarget::Require(flag) => {
+                if let Some(need) = self.project.talk.nodes[node].require.get_mut(flag) {
+                    if need.flag.chars().count() < 24 && ch != ' ' {
+                        need.flag.push(ch);
+                        self.project.dirty = true;
+                    }
+                }
+            }
+            TypeTarget::SetFlag(choice, flag) => {
+                if let Some(choice) = self.project.talk.nodes[node].choices.get_mut(choice) {
+                    if let Some(name) = choice.sets.get_mut(flag) {
+                        if name.chars().count() < 24 && ch != ' ' {
+                            name.push(ch);
+                            self.project.dirty = true;
+                        }
+                    }
+                }
+            }
+            TypeTarget::BattleEntity => {
+                if let Some(battle) = self.project.talk.nodes[node].battle.as_mut() {
+                    if battle.entity.chars().count() < 24 {
+                        battle.entity.push(ch);
+                        self.project.dirty = true;
+                    }
+                }
+            }
+            TypeTarget::BattleMap => {
+                if let Some(battle) = self.project.talk.nodes[node].battle.as_mut() {
+                    if battle.map.chars().count() < 24 {
+                        battle.map.push(ch);
+                        self.project.dirty = true;
+                    }
+                }
+            }
+            TypeTarget::None => {}
+        }
+    }
+
+    fn pop_type_char(&mut self) {
+        let target = self.edit.type_target;
+        let node = self.edit.node_index;
+        let char_index = self.edit.char_index;
+        match target {
+            TypeTarget::Weapon => {
+                let index = char_index.min(self.project.party.len().saturating_sub(1));
+                self.project.party[index].weapon_name.pop();
+                self.project.dirty = true;
+                self.sync_party();
+            }
+            TypeTarget::Require(flag) => {
+                if let Some(need) = self.project.talk.nodes[node].require.get_mut(flag) {
+                    need.flag.pop();
+                    self.project.dirty = true;
+                }
+            }
+            TypeTarget::SetFlag(choice, flag) => {
+                if let Some(choice) = self.project.talk.nodes[node].choices.get_mut(choice) {
+                    if let Some(name) = choice.sets.get_mut(flag) {
+                        name.pop();
+                        self.project.dirty = true;
+                    }
+                }
+            }
+            TypeTarget::BattleEntity => {
+                if let Some(battle) = self.project.talk.nodes[node].battle.as_mut() {
+                    battle.entity.pop();
+                    self.project.dirty = true;
+                }
+            }
+            TypeTarget::BattleMap => {
+                if let Some(battle) = self.project.talk.nodes[node].battle.as_mut() {
+                    battle.map.pop();
+                    self.project.dirty = true;
+                }
+            }
+            TypeTarget::None => {}
+        }
+    }
+
+    fn step_edit_row(&mut self, tap_y: i32, len: usize) {
+        if len == 0 {
+            return;
+        }
+        if tap_y < 0 {
+            self.edit.row = (self.edit.row + len - 1) % len;
+        } else if tap_y > 0 {
+            self.edit.row = (self.edit.row + 1) % len;
         }
     }
 
@@ -665,8 +1402,145 @@ impl Game {
         self.selected().weapon_atk
     }
 
+    fn open_talk(&mut self) {
+        self.halt();
+        self.talk_node = 0;
+        self.talk_choice = 0;
+        if self.project.talk.nodes.is_empty() {
+            self.begin_fight();
+            return;
+        }
+        if !self.requirements_met(0) {
+            return;
+        }
+        let instant = {
+            let node = &self.project.talk.nodes[0];
+            node.choices.is_empty() && node.battle.is_some()
+        };
+        if instant {
+            self.start_node_battle(0);
+        } else {
+            self.mode = Mode::Talk;
+        }
+    }
+
+    fn update_talk(&mut self, input: &Input) {
+        let choice_count = self.current_choices().len();
+        if choice_count == 0 {
+            if input.confirm {
+                let index = self.talk_node;
+                if self
+                    .project
+                    .talk
+                    .nodes
+                    .get(index)
+                    .and_then(|node| node.battle.as_ref())
+                    .is_some()
+                {
+                    self.start_node_battle(index);
+                } else {
+                    self.begin_fight();
+                }
+            }
+            return;
+        }
+        if input.tap_y != 0 {
+            if input.tap_y < 0 {
+                self.talk_choice = (self.talk_choice + choice_count - 1) % choice_count;
+            } else {
+                self.talk_choice = (self.talk_choice + 1) % choice_count;
+            }
+        }
+        if input.confirm {
+            self.apply_choice();
+        }
+    }
+
+    fn apply_choice(&mut self) {
+        let node_index = self.talk_node;
+        let choice_index = self.talk_choice;
+        let Some(choice) = self
+            .project
+            .talk
+            .nodes
+            .get(node_index)
+            .and_then(|node| node.choices.get(choice_index))
+            .cloned()
+        else {
+            return;
+        };
+        for flag in choice.sets {
+            self.flags.insert(flag);
+        }
+        if choice.goto == "end" {
+            self.mode = Mode::Field;
+            return;
+        }
+        let Some(next) = self
+            .project
+            .talk
+            .nodes
+            .iter()
+            .position(|node| node.id == choice.goto)
+        else {
+            self.mode = Mode::Field;
+            return;
+        };
+        self.talk_node = next;
+        self.talk_choice = 0;
+        if !self.requirements_met(next) {
+            self.mode = Mode::Field;
+            return;
+        }
+        let instant = {
+            let node = &self.project.talk.nodes[next];
+            node.choices.is_empty() && node.battle.is_some()
+        };
+        if instant {
+            self.start_node_battle(next);
+        } else {
+            self.mode = Mode::Talk;
+        }
+    }
+
+    fn requirements_met(&self, index: usize) -> bool {
+        let Some(node) = self.project.talk.nodes.get(index) else {
+            return false;
+        };
+        node.require
+            .iter()
+            .all(|need| self.flags.contains(&need.flag) == need.want)
+    }
+
+    fn start_node_battle(&mut self, index: usize) {
+        let Some(link) = self
+            .project
+            .talk
+            .nodes
+            .get(index)
+            .and_then(|node| node.battle.clone())
+        else {
+            return;
+        };
+        if !self.requirements_met(index) || !self.battle_link_matches(&link) {
+            self.mode = Mode::Field;
+            return;
+        }
+        self.begin_fight();
+    }
+
+    fn battle_link_matches(&self, link: &BattleLink) -> bool {
+        if !self.monster_alive {
+            return false;
+        }
+        let entity_ok = link.entity.eq_ignore_ascii_case(&self.monster.name)
+            || link.entity.eq_ignore_ascii_case("slime");
+        let map_ok = link.map == self.project.map_name || link.map == "field";
+        entity_ok && map_ok
+    }
+
     fn begin_fight(&mut self) {
-        self.battle = Battle::fresh(self.monster.name);
+        self.battle = Battle::fresh(&self.monster.name);
         self.queued = None;
         self.mode = Mode::Transition { frame: 0 };
     }
@@ -831,7 +1705,10 @@ impl Game {
 
     fn apply_outcome(&mut self, outcome: Outcome) {
         match outcome {
-            Outcome::Win => self.monster_alive = false,
+            Outcome::Win => {
+                self.monster_alive = false;
+                self.flags.insert("slime_defeated".into());
+            }
             Outcome::Flee => {}
             Outcome::Lose => self.player.hp = self.player.max_hp,
         }
@@ -857,11 +1734,14 @@ impl Game {
         self.save_dir.join("settings.txt")
     }
 
-    fn save_path(&self, id: u32) -> PathBuf {
-        self.save_dir.join(format!("save-{id:03}.txt"))
+    fn slot_path(&self, name: &str) -> PathBuf {
+        self.save_dir
+            .join("slots")
+            .join(format!("{}.txt", file_stem(name)))
     }
 
     fn write_settings(&self) -> io::Result<()> {
+        fs::create_dir_all(&self.save_dir)?;
         let text = format!(
             "volume {}\nwidth {}\nheight {}\n",
             self.volume, self.window_w, self.window_h
@@ -898,48 +1778,109 @@ impl Game {
         }
     }
 
-    fn list_saves(&self) -> Vec<u32> {
-        let mut ids = Vec::new();
-        let Ok(entries) = fs::read_dir(&self.save_dir) else {
-            return ids;
+    pub fn list_saves(&self) -> Vec<String> {
+        self.list_heads()
+            .into_iter()
+            .map(|head| head.name)
+            .collect()
+    }
+
+    fn list_heads(&self) -> Vec<SlotHead> {
+        let mut heads = Vec::new();
+        let Ok(entries) = fs::read_dir(self.save_dir.join("slots")) else {
+            return heads;
         };
         for entry in entries.flatten() {
-            let name = entry.file_name();
-            let Some(name) = name.to_str() else {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("txt") {
+                continue;
+            }
+            let Ok(text) = fs::read_to_string(&path) else {
                 continue;
             };
-            let Some(rest) = name.strip_prefix("save-") else {
-                continue;
-            };
-            let Some(num) = rest.strip_suffix(".txt") else {
-                continue;
-            };
-            if let Ok(id) = num.parse::<u32>() {
-                if id > 0 {
-                    ids.push(id);
-                }
+            if let Some((name, stamp)) = peek_slot(&text) {
+                heads.push(SlotHead { name, stamp, path });
             }
         }
-        ids.sort_unstable_by(|a, b| b.cmp(a));
-        ids.dedup();
-        ids
+        heads.sort_by(|a, b| b.stamp.cmp(&a.stamp).then(a.name.cmp(&b.name)));
+        heads
     }
 
-    fn write_save(&mut self) -> io::Result<u32> {
-        let id = self
-            .list_saves()
-            .into_iter()
-            .max()
-            .unwrap_or(0)
-            .saturating_add(1);
-        fs::write(self.save_path(id), self.save_text())?;
+    #[cfg(test)]
+    pub fn save_named(&mut self, name: &str) -> io::Result<String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "name"));
+        }
+        self.write_slot(name)
+    }
+
+    pub fn overwrite_current(&mut self) -> io::Result<String> {
+        let name = self.slot_name.clone().unwrap_or_else(|| "Save".into());
+        self.write_slot(&name)
+    }
+
+    pub fn fork_named(&mut self, name: &str) -> io::Result<String> {
+        let name = self.unique_name(name.trim());
+        if name.is_empty() {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "name"));
+        }
+        self.write_slot(&name)
+    }
+
+    fn unique_name(&self, name: &str) -> String {
+        let heads = self.list_heads();
+        let mut candidate = if name.is_empty() {
+            "Fork".to_string()
+        } else {
+            name.to_string()
+        };
+        for n in 0..100 {
+            if n > 0 {
+                candidate = format!("{name} {}", n + 1);
+            }
+            let stem = file_stem(&candidate);
+            let clash = heads
+                .iter()
+                .any(|head| head.name == candidate || file_stem(&head.name) == stem);
+            if !clash {
+                return candidate;
+            }
+        }
+        candidate
+    }
+
+    fn write_slot(&mut self, name: &str) -> io::Result<String> {
+        let stamp = self.next_stamp();
+        let path = self.slot_path(name);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&path, self.save_text(name, stamp))?;
         let _ = self.write_settings();
-        Ok(id)
+        self.slot_name = Some(name.to_string());
+        Ok(name.to_string())
     }
 
-    fn save_text(&self) -> String {
+    fn next_stamp(&self) -> u64 {
+        let max = self
+            .list_heads()
+            .iter()
+            .map(|head| head.stamp)
+            .max()
+            .unwrap_or(0);
+        let time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|dur| dur.as_millis() as u64)
+            .unwrap_or(0);
+        time.max(max.saturating_add(1))
+    }
+
+    fn save_text(&self, name: &str, stamp: u64) -> String {
         let mut out = String::new();
-        let _ = writeln!(out, "fablespace-save 1");
+        let _ = writeln!(out, "fablespace-save 2");
+        let _ = writeln!(out, "name {name}");
+        let _ = writeln!(out, "stamp {stamp}");
         let _ = writeln!(out, "px {}", self.px);
         let _ = writeln!(out, "py {}", self.py);
         let _ = writeln!(out, "hp {}", self.player.hp);
@@ -956,34 +1897,29 @@ impl Game {
         let _ = writeln!(out, "volume {}", self.volume);
         let _ = writeln!(out, "width {}", self.window_w);
         let _ = writeln!(out, "height {}", self.window_h);
+        let _ = writeln!(out, "flags {}", self.flags.len());
+        for flag in &self.flags {
+            let _ = writeln!(out, "flag {flag}");
+        }
         let _ = writeln!(out, "characters {}", self.characters.len());
         for character in &self.characters {
-            let _ = writeln!(out, "character {}", character.name);
-            let _ = writeln!(out, "weapon {}", character.weapon_name);
-            let _ = writeln!(out, "weapon_atk {}", character.weapon_atk);
-            let _ = writeln!(out, "items {}", character.inventory.len());
-            for item in &character.inventory {
-                let _ = writeln!(out, "item {}", item.name);
-            }
-            let _ = writeln!(out, "skills {}", character.skills.len());
-            for skill in &character.skills {
-                let _ = writeln!(out, "skill {}", skill);
-            }
+            character.write_block(&mut out);
         }
         out
     }
 
     fn load_newest(&mut self) -> bool {
-        for id in self.list_saves() {
-            if self.load_id(id) {
-                return true;
-            }
-        }
-        false
+        let Some(name) = self.list_saves().into_iter().next() else {
+            return false;
+        };
+        self.load_name(&name)
     }
 
-    fn load_id(&mut self, id: u32) -> bool {
-        let Ok(text) = fs::read_to_string(self.save_path(id)) else {
+    fn load_name(&mut self, name: &str) -> bool {
+        let Some(head) = self.list_heads().into_iter().find(|head| head.name == name) else {
+            return false;
+        };
+        let Ok(text) = fs::read_to_string(&head.path) else {
             return false;
         };
         self.apply_save(&text)
@@ -994,16 +1930,18 @@ impl Game {
             return false;
         };
         let (
-            Some(mut px),
-            Some(mut py),
+            Some(name),
+            Some(px),
+            Some(py),
             Some(hp),
             Some(max_hp),
             Some(slime_alive),
             Some(slime_hp),
             Some(slime_max),
-            Some(mut sx),
-            Some(mut sy),
+            Some(sx),
+            Some(sy),
         ) = (
+            data.name,
             data.px,
             data.py,
             data.hp,
@@ -1020,21 +1958,13 @@ impl Game {
         if data.characters.is_empty() {
             return false;
         }
-        if !ground_at(px, py) {
-            px = START_X;
-            py = START_Y;
-        }
-        if !ground_at(sx, sy) {
-            sx = SLIME_X;
-            sy = SLIME_Y;
-        }
+        let (mut px, mut py) = self.place(px, py);
+        let (sx, sy) = self.place(sx, sy);
         let alive = slime_alive && slime_hp > 0;
         if alive && px == sx && py == sy {
-            py += 1;
-            if !ground_at(px, py) {
-                px = START_X;
-                py = START_Y;
-            }
+            let bumped = self.place(px, py + 1);
+            px = bumped.0;
+            py = bumped.1;
         }
         let max_hp = max_hp.max(1);
         self.px = px;
@@ -1056,14 +1986,39 @@ impl Game {
             }
         }
         self.characters = data.characters;
+        self.player.name = self.characters[0].name.clone();
+        self.player.atk = self.characters[0].atk;
+        self.player.def = self.characters[0].def;
+        self.flags = data.flags;
+        self.slot_name = Some(name);
         self.party_index = 0;
         self.menu_cursor = 0;
         self.notice = None;
         self.halt();
-        self.battle = Battle::fresh(self.monster.name);
+        self.battle = Battle::fresh(&self.monster.name);
         self.mode = Mode::Field;
         let _ = self.write_settings();
         true
+    }
+
+    fn place(&self, x: i32, y: i32) -> (i32, i32) {
+        if self.project.walkable(x, y) {
+            return (x, y);
+        }
+        if self
+            .project
+            .walkable(self.project.start_x, self.project.start_y)
+        {
+            return (self.project.start_x, self.project.start_y);
+        }
+        for y in 0..MAP_H {
+            for x in 0..MAP_W {
+                if self.project.walkable(x, y) {
+                    return (x, y);
+                }
+            }
+        }
+        (0, 0)
     }
 }
 
@@ -1075,16 +2030,6 @@ impl Battle {
             phase: Phase::Choose,
             guarding: false,
         }
-    }
-}
-
-fn mira() -> Character {
-    Character {
-        name: "Mira".to_string(),
-        weapon_name: WEAPON_NAME.to_string(),
-        weapon_atk: WEAPON_ATK,
-        inventory: Vec::new(),
-        skills: Vec::new(),
     }
 }
 
@@ -1120,16 +2065,57 @@ fn harm(atk: i32, def: i32, guard: bool) -> i32 {
     }
 }
 
+fn is_path_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '/' | '\\' | '.' | '-' | '_' | ':' | ' ')
+}
+
+fn file_stem(name: &str) -> String {
+    let mut out = String::new();
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+        } else if matches!(ch, ' ' | '-' | '_') && !out.ends_with('-') && !out.is_empty() {
+            out.push('-');
+        }
+    }
+    let out = out.trim_matches('-').to_string();
+    if out.is_empty() {
+        "save".into()
+    } else {
+        out
+    }
+}
+
+fn peek_slot(text: &str) -> Option<(String, u64)> {
+    if !text.lines().any(|line| line.trim() == "fablespace-save 2") {
+        return None;
+    }
+    let mut name = None;
+    let mut stamp = None;
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("name ") {
+            if !rest.is_empty() {
+                name = Some(rest.to_string());
+            }
+        } else if let Some(rest) = line.strip_prefix("stamp ") {
+            stamp = rest.parse::<u64>().ok();
+        }
+    }
+    Some((name?, stamp?))
+}
+
 fn parse_save(text: &str) -> Option<SaveData> {
     let lines: Vec<&str> = text
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .collect();
-    if lines.first().copied() != Some("fablespace-save 1") {
+    if lines.first().copied() != Some("fablespace-save 2") {
         return None;
     }
     let mut data = SaveData {
+        name: None,
         px: None,
         py: None,
         hp: None,
@@ -1142,21 +2128,37 @@ fn parse_save(text: &str) -> Option<SaveData> {
         volume: None,
         width: None,
         height: None,
+        flags: BTreeSet::new(),
         characters: Vec::new(),
     };
     let mut index = 1;
     while index < lines.len() {
         let line = lines[index];
         index += 1;
+        if let Some(rest) = line.strip_prefix("flags ") {
+            let count: usize = rest.parse().ok()?;
+            for _ in 0..count {
+                let flag = lines.get(index)?.strip_prefix("flag ")?;
+                index += 1;
+                if flag.is_empty() {
+                    return None;
+                }
+                data.flags.insert(flag.to_string());
+            }
+            continue;
+        }
         if let Some(rest) = line.strip_prefix("characters ") {
             let count: usize = rest.parse().ok()?;
             for _ in 0..count {
-                data.characters.push(parse_character(&lines, &mut index)?);
+                data.characters
+                    .push(crate::project::parse_character(&lines, &mut index).ok()?);
             }
             continue;
         }
         let (key, value) = line.split_once(' ')?;
         match key {
+            "name" => data.name = Some(value.to_string()),
+            "stamp" => {}
             "px" => data.px = Some(value.parse().ok()?),
             "py" => data.py = Some(value.parse().ok()?),
             "hp" => data.hp = Some(value.parse().ok()?),
@@ -1173,56 +2175,6 @@ fn parse_save(text: &str) -> Option<SaveData> {
         }
     }
     Some(data)
-}
-
-fn parse_character(lines: &[&str], index: &mut usize) -> Option<Character> {
-    let name = lines.get(*index)?.strip_prefix("character ")?.to_string();
-    *index += 1;
-    if name.is_empty() {
-        return None;
-    }
-    let weapon_name = lines.get(*index)?.strip_prefix("weapon ")?.to_string();
-    *index += 1;
-    if weapon_name.is_empty() {
-        return None;
-    }
-    let weapon_atk = lines
-        .get(*index)?
-        .strip_prefix("weapon_atk ")?
-        .parse()
-        .ok()?;
-    *index += 1;
-    let item_count: usize = lines.get(*index)?.strip_prefix("items ")?.parse().ok()?;
-    *index += 1;
-    let mut inventory = Vec::new();
-    for _ in 0..item_count {
-        let item = lines.get(*index)?.strip_prefix("item ")?;
-        *index += 1;
-        if item.is_empty() {
-            return None;
-        }
-        inventory.push(Item {
-            name: item.to_string(),
-        });
-    }
-    let skill_count: usize = lines.get(*index)?.strip_prefix("skills ")?.parse().ok()?;
-    *index += 1;
-    let mut skills = Vec::new();
-    for _ in 0..skill_count {
-        let skill = lines.get(*index)?.strip_prefix("skill ")?;
-        *index += 1;
-        if skill.is_empty() {
-            return None;
-        }
-        skills.push(skill.to_string());
-    }
-    Some(Character {
-        name,
-        weapon_name,
-        weapon_atk,
-        inventory,
-        skills,
-    })
 }
 
 #[cfg(test)]
@@ -1322,6 +2274,48 @@ mod tests {
         false
     }
 
+    fn expected_terrain(x: i32, y: i32) -> Terrain {
+        for building in BUILDINGS {
+            if x >= building.x
+                && x < building.x + building.w
+                && y >= building.y
+                && y < building.y + building.h
+            {
+                let roof = y < building.y + building.roof_rows;
+                return match (building.wood, roof) {
+                    (true, true) => Terrain::RoofRed,
+                    (true, false) => Terrain::WallWood,
+                    (false, true) => Terrain::RoofBlue,
+                    (false, false) => Terrain::WallStone,
+                };
+            }
+        }
+        if x >= ROAD_X && x < ROAD_X + ROAD_W && y >= ROAD_Y0 && y < ROAD_Y1 {
+            return match x - ROAD_X {
+                0 => Terrain::RoadLeft,
+                1 => Terrain::Road,
+                _ => Terrain::RoadRight,
+            };
+        }
+        Terrain::Grass
+    }
+
+    #[test]
+    fn the_default_project_is_the_old_field() {
+        let project = default_project();
+        assert_eq!(project.party[0].name, "Mira");
+        assert_eq!(project.party[0].weapon_name, WEAPON_NAME);
+        assert_eq!(project.party[0].weapon_atk, WEAPON_ATK);
+        assert_eq!(project.talk.nodes[0].text, TALK_LINE);
+        assert_eq!(project.mushrooms, MUSHROOMS);
+        assert_eq!(project.buildings, BUILDINGS);
+        for y in 0..MAP_H {
+            for x in 0..MAP_W {
+                assert_eq!(project.terrain(x, y), Some(expected_terrain(x, y)));
+            }
+        }
+    }
+
     #[test]
     fn tiles_are_32px_and_the_view_is_about_sixty_by_thirty_three() {
         assert_eq!(SCALE, 2);
@@ -1357,20 +2351,21 @@ mod tests {
 
     #[test]
     fn the_town_is_east_and_the_slime_is_reachable() {
-        assert!(ROAD_X > MAP_W / 2);
-        assert_eq!(BUILDINGS.len(), 2);
-        assert_eq!(BUILDINGS[0].y, BUILDINGS[1].y);
-        assert!(BUILDINGS[1].x >= BUILDINGS[0].x + BUILDINGS[0].w);
-        assert!(BUILDINGS[1].x - (BUILDINGS[0].x + BUILDINGS[0].w) <= 2);
-        assert_eq!(ROAD_Y0, BUILDINGS[0].y + BUILDINGS[0].h);
-        assert!(BUILDINGS.iter().all(|building| building.x > MAP_W / 2));
-        for building in BUILDINGS {
-            assert!(!ground_at(building.x, building.y));
-            assert!(!ground_at(building.x, building.y + building.roof_rows));
+        let game = field_game();
+        assert!(game.project.road_x > MAP_W / 2);
+        assert_eq!(game.project.buildings.len(), 2);
+        assert_eq!(game.project.buildings[0].y, game.project.buildings[1].y);
+        assert!(
+            game.project.buildings[1].x
+                >= game.project.buildings[0].x + game.project.buildings[0].w
+        );
+        for building in &game.project.buildings {
+            assert!(!game.ground(building.x, building.y));
+            assert!(!game.ground(building.x, building.y + building.roof_rows));
         }
-        assert!(!ground_at(-1, 0));
-        assert!(!ground_at(MAP_W, MAP_H - 1));
-        assert!(ground_at(ROAD_X + 1, ROAD_Y0));
+        assert!(!game.ground(-1, 0));
+        assert!(!game.ground(MAP_W, MAP_H - 1));
+        assert!(game.ground(game.project.road_x + 1, game.project.road_y0));
         assert!(can_reach((START_X, START_Y), (SLIME_X, SLIME_Y + 1)));
         assert!(can_reach((START_X, START_Y), (ROAD_X + 1, 30)));
     }
@@ -1456,26 +2451,47 @@ mod tests {
     }
 
     #[test]
+    fn edit_is_on_the_title_and_not_in_play() {
+        assert!(TITLE_ITEMS.contains(&"Edit"));
+        assert!(!SYSTEM_ITEMS.contains(&"Edit"));
+        let mut game = Game::with_save_dir(isolated_dir());
+        game.menu_cursor = EDIT_ITEM;
+        game.update(&confirm());
+        assert_eq!(game.mode, Mode::Edit);
+        game.update(&pause());
+        assert_eq!(game.mode, Mode::Title);
+
+        let mut game = field_game();
+        game.update(&pause());
+        assert!(matches!(game.mode, Mode::System(_)));
+        game.update(&Input {
+            tab: true,
+            ..Input::default()
+        });
+        assert!(matches!(game.mode, Mode::System(_)));
+    }
+
+    #[test]
     fn continue_without_a_save_stays_on_the_title() {
         let mut game = Game::with_save_dir(isolated_dir());
         assert_eq!(game.mode, Mode::Title);
         game.update(&confirm());
         assert_eq!(game.mode, Mode::Title);
-        assert_eq!(game.notice, Some("No save."));
+        assert_eq!(game.notice.as_deref(), Some("No save."));
     }
 
     #[test]
     fn title_quit_closes_immediately() {
         let dir = isolated_dir();
         let mut game = Game::with_save_dir(&dir);
-        game.menu_cursor = 3;
+        game.menu_cursor = 4;
         game.update(&confirm());
         assert!(game.should_quit());
         assert!(game.list_saves().is_empty());
     }
 
     #[test]
-    fn save_keeps_place_slime_inventory_and_settings() {
+    fn save_keeps_place_flags_party_and_settings() {
         let dir = isolated_dir();
         let mut game = Game::with_save_dir(&dir);
         game.start_new_game();
@@ -1486,6 +2502,7 @@ mod tests {
         game.volume = 4;
         game.window_w = 1280;
         game.window_h = 720;
+        game.flags.insert("slime_fight".into());
         game.characters[0].inventory.push(Item {
             name: "Herb".into(),
         });
@@ -1493,16 +2510,25 @@ mod tests {
             name: "Jun".into(),
             weapon_name: "Bow".into(),
             weapon_atk: 2,
+            hp: 18,
+            max_hp: 18,
+            atk: 3,
+            def: 1,
             inventory: vec![Item {
                 name: "Rope".into(),
             }],
             skills: vec!["Focus".into()],
         });
-        let first = game.write_save().unwrap();
+        let first = game.save_named("Dawn").unwrap();
         game.px = 55;
         game.py = 22;
-        let second = game.write_save().unwrap();
-        assert!(second > first);
+        let second = game.fork_named("Noon").unwrap();
+        assert_eq!(first, "Dawn");
+        assert_eq!(second, "Noon");
+        assert_eq!(
+            game.list_saves(),
+            vec!["Noon".to_string(), "Dawn".to_string()]
+        );
 
         let mut loaded = Game::with_save_dir(&dir);
         loaded.update(&confirm());
@@ -1514,16 +2540,18 @@ mod tests {
         assert_eq!((loaded.mx, loaded.my), (SLIME_X, SLIME_Y));
         assert_eq!(loaded.volume, 4);
         assert_eq!(loaded.window_size(), (1280, 720));
+        assert!(loaded.flags.contains("slime_fight"));
         assert_eq!(loaded.characters[0].name, "Mira");
         assert_eq!(loaded.characters[0].weapon_name, WEAPON_NAME);
         assert_eq!(loaded.characters[0].inventory[0].name, "Herb");
         assert!(loaded.characters[0].skills.is_empty());
         assert_eq!(loaded.characters[1].inventory[0].name, "Rope");
         assert_eq!(loaded.characters[1].skills[0], "Focus");
-        assert_ne!(
-            loaded.characters[0].inventory[0].name,
-            loaded.characters[1].inventory[0].name
-        );
+
+        game.px = 60;
+        game.overwrite_current().unwrap();
+        assert_eq!(game.list_saves()[0], "Noon");
+        assert_eq!(game.list_saves().len(), 2);
 
         let mut picker = Game::with_save_dir(&dir);
         picker.menu_cursor = 1;
@@ -1535,10 +2563,11 @@ mod tests {
                 ..
             }
         ));
-        assert_eq!(picker.slots, vec![second, first]);
+        assert_eq!(picker.slots, vec!["Noon".to_string(), "Dawn".to_string()]);
         picker.update(&down());
         picker.update(&confirm());
         assert_eq!((picker.px, picker.py), (ROAD_X + 1, 20));
+        assert_eq!(picker.slot_name.as_deref(), Some("Dawn"));
 
         let mut fresh = Game::with_save_dir(&dir);
         fresh.menu_cursor = 2;
@@ -1547,10 +2576,31 @@ mod tests {
         assert_eq!((fresh.px, fresh.py), (START_X, START_Y));
         assert_eq!(fresh.characters.len(), 1);
         assert!(fresh.characters[0].inventory.is_empty());
+        assert!(fresh.flags.is_empty());
         assert_eq!(fresh.volume, 4);
         assert_eq!(fresh.player.hp, fresh.player.max_hp);
         assert!(fresh.monster_alive);
-        assert_eq!(fresh.monster.hp, fresh.monster.max_hp);
+    }
+
+    #[test]
+    fn saving_asks_overwrite_or_fork() {
+        let mut game = field_game();
+        game.update(&pause());
+        game.update(&confirm());
+        assert!(matches!(game.mode, Mode::SaveAsk(Back::Field)));
+        game.update(&confirm());
+        assert_eq!(game.notice.as_deref(), Some("Saved."));
+        assert_eq!(game.list_saves(), vec!["Save".to_string()]);
+        game.update(&confirm());
+        game.update(&down());
+        game.update(&confirm());
+        assert!(matches!(game.mode, Mode::NameSlot(_)));
+        assert_eq!(game.name_buf, "Save fork");
+        game.update(&confirm());
+        assert_eq!(
+            game.list_saves(),
+            vec!["Save fork".to_string(), "Save".to_string()]
+        );
     }
 
     #[test]
@@ -1612,7 +2662,7 @@ mod tests {
         }
         game.update(&confirm());
         assert!(game.should_quit());
-        assert_eq!(game.list_saves(), vec![1]);
+        assert_eq!(game.list_saves(), vec!["Save".to_string()]);
 
         let mut game = Game::with_save_dir(&dir);
         game.start_new_game();
@@ -1663,6 +2713,116 @@ mod tests {
     }
 
     #[test]
+    fn fight_choice_starts_the_slime_on_the_field() {
+        let mut game = field_game();
+        let fight = game
+            .project
+            .talk
+            .nodes
+            .iter()
+            .find(|node| node.id == "fight")
+            .unwrap();
+        let battle = fight.battle.as_ref().unwrap();
+        assert_eq!(battle.entity, "slime");
+        assert_eq!(battle.map, "field");
+        enter_battle(&mut game);
+        assert!(game.flags.contains("slime_fight"));
+        assert!(!game.flags.contains("slime_friend"));
+    }
+
+    #[test]
+    fn peace_sets_the_relationship_and_does_not_fight() {
+        let mut game = field_game();
+        stand_next_to_slime(&mut game);
+        game.update(&confirm());
+        game.update(&down());
+        game.update(&confirm());
+        assert_eq!(game.mode, Mode::Talk);
+        assert_eq!(game.current_line(), "Then stay on the path.");
+        assert!(game.flags.contains("slime_friend"));
+        assert!(game.monster_alive);
+        game.update(&confirm());
+        assert_eq!(game.mode, Mode::Field);
+        assert!(game.monster_alive);
+    }
+
+    #[test]
+    fn the_relationship_flag_blocks_the_fight() {
+        let mut game = field_game();
+        game.flags.insert("slime_friend".into());
+        stand_next_to_slime(&mut game);
+        game.update(&confirm());
+        game.update(&confirm());
+        assert_eq!(game.mode, Mode::Field);
+        assert!(game.monster_alive);
+        assert!(game.flags.contains("slime_fight"));
+    }
+
+    #[test]
+    fn edit_paints_and_keeps_mira() {
+        let mut game = field_game();
+        game.mode = Mode::Edit;
+        game.edit.cx = 4;
+        game.edit.cy = 4;
+        game.edit.brush = Brush::Void;
+        game.update(&confirm());
+        assert_eq!(game.project.terrain(4, 4), Some(Terrain::Void));
+        assert!(!game.ground(4, 4));
+        game.edit.brush = Brush::HouseWood;
+        game.edit.cx = 10;
+        game.edit.cy = 10;
+        game.update(&confirm());
+        assert_eq!(game.project.terrain(10, 10), Some(Terrain::RoofRed));
+        assert_eq!(game.project.terrain(10, 13), Some(Terrain::WallWood));
+        assert!(!game.ground(10, 13));
+
+        game.edit.page = EditPage::Characters;
+        game.edit.row = 1;
+        game.update(&confirm());
+        assert_eq!(game.project.party.len(), 2);
+        assert!(!game.project.party[1]
+            .inventory
+            .iter()
+            .any(|item| item.name == "Herb"));
+        game.edit.row = 2;
+        game.edit.char_index = 0;
+        game.update(&confirm());
+        assert_eq!(game.project.party.len(), 1);
+        assert_eq!(game.project.party[0].name, "Ally 1");
+        game.project.party[0].name = "Mira".into();
+        game.update(&confirm());
+        assert_eq!(game.notice.as_deref(), Some("Mira stays."));
+        assert_eq!(game.project.party.len(), 1);
+    }
+
+    #[test]
+    fn edit_sets_required_flags_and_choice_flags() {
+        let mut game = field_game();
+        game.mode = Mode::Edit;
+        game.edit.page = EditPage::Dialogue;
+        game.edit.node_index = 1;
+        game.edit.row = 1;
+        let before = game.project.talk.nodes[1].require[0].want;
+        game.update(&Input {
+            tap_x: 1,
+            ..Input::default()
+        });
+        assert_ne!(game.project.talk.nodes[1].require[0].want, before);
+        game.edit.node_index = 0;
+        game.edit.row = 0;
+        let add_set = game
+            .dialogue_rows()
+            .iter()
+            .position(|row| matches!(row, DiaRow::AddSet(0)))
+            .unwrap();
+        game.edit.row = add_set;
+        game.update(&confirm());
+        assert!(game.project.talk.nodes[0].choices[0]
+            .sets
+            .contains(&"flag".to_string()));
+    }
+
+    #[test]
     fn attack_twice_wins_and_removes_the_monster() {
         let mut game = field_game();
         enter_battle(&mut game);
@@ -1679,6 +2839,7 @@ mod tests {
         assert_eq!(game.mode, Mode::Field);
         assert!(!game.monster_alive);
         assert_eq!(game.monster.hp, 0);
+        assert!(game.flags.contains("slime_defeated"));
         game.update(&confirm());
         assert_eq!(game.mode, Mode::Field);
     }
@@ -1695,7 +2856,6 @@ mod tests {
         let hp = game.player.hp;
         game.update(&confirm());
         idle(&mut game, u16::from(BEAT));
-        // Unguarded slime damage is 5 - 2 = 3, so a guard takes 1.
         assert_eq!(game.player.hp, hp - 1);
         assert!(!game.battle.guarding);
     }

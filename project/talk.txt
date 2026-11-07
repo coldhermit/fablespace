@@ -1,0 +1,15 @@
+fablespace-talk 1
+node greet
+text Keep off my grass.
+choice Fight fight
+set slime_fight
+choice Make peace peace
+set slime_friend
+node fight
+require slime_fight
+require !slime_friend
+battle slime field
+node peace
+text Then stay on the path.
+require slime_friend
+choice Okay end

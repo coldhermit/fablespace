@@ -10,6 +10,7 @@ mod atlas;
 mod draw;
 mod font;
 mod game;
+mod project;
 
 use game::{Input, HEIGHT, WIDTH};
 use softbuffer::{Context, Surface};
@@ -17,7 +18,7 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
-use winit::dpi::PhysicalSize;
+use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
@@ -100,6 +101,8 @@ impl ApplicationHandler for App {
         let (win_w, win_h) = self.game.window_size();
         let attrs = Window::default_attributes()
             .with_title("Field Battle")
+            .with_decorations(false)
+            .with_position(PhysicalPosition::new(0, 0))
             .with_inner_size(PhysicalSize::new(win_w, win_h))
             .with_min_inner_size(PhysicalSize::new(WIDTH / 4, HEIGHT / 4));
         let window = match event_loop.create_window(attrs) {
@@ -138,9 +141,14 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Focused(false) => self.keys.release(),
             WindowEvent::KeyboardInput { event, .. } => {
+                let text = event.text.as_ref().and_then(|text| text.chars().next());
                 if let PhysicalKey::Code(code) = event.physical_key {
-                    self.keys
-                        .on_key(code, event.state == ElementState::Pressed, event.repeat);
+                    self.keys.on_key(
+                        code,
+                        event.state == ElementState::Pressed,
+                        event.repeat,
+                        text,
+                    );
                 }
             }
             WindowEvent::RedrawRequested => {
@@ -206,6 +214,11 @@ struct Keys {
     confirm: bool,
     pause: bool,
     tab: bool,
+    backspace: bool,
+    page_left: bool,
+    page_right: bool,
+    text: Option<char>,
+    digit: Option<u8>,
 }
 
 impl Keys {
@@ -213,7 +226,7 @@ impl Keys {
         *self = Self::default();
     }
 
-    fn on_key(&mut self, code: KeyCode, down: bool, repeat: bool) {
+    fn on_key(&mut self, code: KeyCode, down: bool, repeat: bool, text: Option<char>) {
         let dir = match code {
             KeyCode::ArrowLeft | KeyCode::KeyA => Some((-1, 0)),
             KeyCode::ArrowRight | KeyCode::KeyD => Some((1, 0)),
@@ -245,7 +258,29 @@ impl Keys {
             KeyCode::KeyZ | KeyCode::Enter | KeyCode::NumpadEnter => self.confirm = true,
             KeyCode::Escape | KeyCode::KeyP => self.pause = true,
             KeyCode::Tab => self.tab = true,
+            KeyCode::Backspace => self.backspace = true,
+            KeyCode::KeyQ | KeyCode::BracketLeft => self.page_left = true,
+            KeyCode::KeyE | KeyCode::BracketRight => self.page_right = true,
+            KeyCode::Digit1 | KeyCode::Numpad1 => self.digit = Some(1),
+            KeyCode::Digit2 | KeyCode::Numpad2 => self.digit = Some(2),
+            KeyCode::Digit3 | KeyCode::Numpad3 => self.digit = Some(3),
+            KeyCode::Digit4 | KeyCode::Numpad4 => self.digit = Some(4),
+            KeyCode::Digit5 | KeyCode::Numpad5 => self.digit = Some(5),
+            KeyCode::Digit6 | KeyCode::Numpad6 => self.digit = Some(6),
+            KeyCode::Digit7 | KeyCode::Numpad7 => self.digit = Some(7),
             _ => {}
+        }
+        if let Some(ch) = text {
+            if !matches!(
+                code,
+                KeyCode::Enter
+                    | KeyCode::NumpadEnter
+                    | KeyCode::Escape
+                    | KeyCode::Backspace
+                    | KeyCode::Tab
+            ) {
+                self.text = Some(ch);
+            }
         }
     }
 
@@ -258,12 +293,22 @@ impl Keys {
             confirm: self.confirm,
             pause: self.pause,
             tab: self.tab,
+            backspace: self.backspace,
+            page_left: self.page_left,
+            page_right: self.page_right,
+            text: self.text,
+            digit: self.digit,
         };
         self.tap_x = 0;
         self.tap_y = 0;
         self.confirm = false;
         self.pause = false;
         self.tab = false;
+        self.backspace = false;
+        self.page_left = false;
+        self.page_right = false;
+        self.text = None;
+        self.digit = None;
         input
     }
 }
