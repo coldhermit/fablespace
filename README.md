@@ -5,7 +5,7 @@ A grass field, a town, and one conversation. The author in `author/` is a deskto
 ## Play
 
 On Windows, double-click `build.bat`. On Linux or macOS, run `./build.sh`.
-Either one builds the release game and the author, and copies the game next to `project/`.
+That builds the release game and copies it next to `project/`.
 
 ```
 cargo run --release

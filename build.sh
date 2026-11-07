@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build the game and the author from this folder.
+# Build the pixel game from this folder.
 # On Linux, also cross-build field-battle.exe when the mingw gcc is installed.
 set -eu
 cd "$(dirname "$0")"
@@ -18,14 +18,8 @@ cargo build --release
 
 host=$(rustc -vV | sed -n 's/^host: //p')
 case "$host" in
-  *windows*)
-    game="$CARGO_TARGET_DIR/release/field-battle.exe"
-    author="$CARGO_TARGET_DIR/release/fablespace-author.exe"
-    ;;
-  *)
-    game="$CARGO_TARGET_DIR/release/field-battle"
-    author="$CARGO_TARGET_DIR/release/fablespace-author"
-    ;;
+  *windows*) game="$CARGO_TARGET_DIR/release/field-battle.exe" ;;
+  *) game="$CARGO_TARGET_DIR/release/field-battle" ;;
 esac
 cp -f "$game" "$root/$(basename "$game")"
 echo "Ready: $root/$(basename "$game")"
@@ -39,8 +33,4 @@ if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
   echo "Ready: $root/field-battle.exe"
 fi
 
-echo "Building the author..."
-cargo build --release --manifest-path author/src-tauri/Cargo.toml
-cp -f "$author" "$root/$(basename "$author")"
-echo "Ready: $root/$(basename "$author")"
 echo "The game loads ./project from the same folder as the executable."

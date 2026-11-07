@@ -1,4 +1,4 @@
-# Build the game and the author. The game exe is copied next to project\.
+# Build the pixel game. The exe is copied next to project\.
 # Double-click build.bat, or run this file from PowerShell.
 $ErrorActionPreference = "Stop"
 $Root = $PSScriptRoot
@@ -84,13 +84,4 @@ if (-not (Test-Path $game)) {
 }
 Copy-Item -Force $game (Join-Path $Root "field-battle.exe")
 Write-Host "Ready: $(Join-Path $Root 'field-battle.exe')"
-
-Write-Host "Building the author..."
-Invoke-Cargo ($prefix + @("build", "--release", "--manifest-path", "author/src-tauri/Cargo.toml"))
-$author = Join-Path $env:CARGO_TARGET_DIR "release\fablespace-author.exe"
-if (-not (Test-Path $author)) {
-    Write-Error "cargo finished but $author is missing."
-}
-Copy-Item -Force $author (Join-Path $Root "fablespace-author.exe")
-Write-Host "Ready: $(Join-Path $Root 'fablespace-author.exe')"
 Write-Host "The game loads .\project from the same folder as field-battle.exe."
