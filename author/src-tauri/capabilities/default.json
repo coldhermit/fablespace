@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The author window can save a project and build a portable game.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

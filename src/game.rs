@@ -5,6 +5,7 @@
 //! mode is only opened from the title.
 
 use crate::atlas::TILE;
+use crate::content::{self, seed_bases, Check, FlagNeed, StatMod};
 use crate::project::import_png;
 #[cfg(test)]
 use crate::project::{default_project, Building};
@@ -288,6 +289,7 @@ pub enum Mode {
     Party,
     Skills,
     Inventory,
+    SkillTree,
     Edit,
 }
 
@@ -370,6 +372,10 @@ pub struct Game {
     pub talk_choice: usize,
     pub edit: EditState,
     pub name_buf: String,
+    pub list_cursor: usize,
+    pub anim: u32,
+    last_combat: Option<Outcome>,
+    battle_from: Option<usize>,
     walk: Option<Walk>,
     queued: Option<(i32, i32)>,
     quit: bool,
@@ -413,6 +419,7 @@ impl Game {
     }
 
     pub fn update(&mut self, input: &Input) {
+        self.anim = self.anim.wrapping_add(1);
         if self.quit {
             return;
         }
@@ -424,7 +431,7 @@ impl Game {
             Mode::SaveAsk(_) => self.update_save_ask(input),
             Mode::NameSlot(_) => self.update_name(input),
             Mode::Party => self.update_party(input),
-            Mode::Skills | Mode::Inventory => self.update_submenu(input),
+            Mode::Skills | Mode::Inventory | Mode::SkillTree => self.update_submenu(input),
             Mode::Edit => self.update_edit(input),
             Mode::Field | Mode::Talk | Mode::Battle | Mode::Transition { .. } => {
                 self.update_world(input);
@@ -600,12 +607,38 @@ impl Game {
             talk_choice: 0,
             edit: EditState::default(),
             name_buf: String::new(),
+            list_cursor: 0,
+            anim: 0,
+            last_combat: None,
+            battle_from: None,
             walk: None,
             queued: None,
             quit: false,
             save_dir,
             project_dir,
         }
+        .seeded()
+    }
+
+    fn seeded(mut self) -> Self {
+        for npc in &self.project.extras.npc_stats.clone() {
+            if let Some(character) = self
+                .characters
+                .iter_mut()
+                .find(|character| character.name == npc.name)
+            {
+                seed_bases(&mut character.bases, &npc.bases);
+            }
+        }
+        if let Some(lead) = self.characters.first() {
+            self.player.hp = lead.hp;
+            self.player.max_hp = lead.max_hp.max(1);
+            self.player.atk = lead.atk;
+            self.player.def = lead.def;
+            self.player.name = lead.name.clone();
+        }
+        self.reposition();
+        self
     }
 
     fn update_title(&mut self, input: &Input) {
@@ -826,12 +859,14 @@ impl Game {
             self.party_index = next.rem_euclid(count) as usize;
         }
         if input.tap_y != 0 {
-            self.step_cursor(input.tap_y, 3);
+            self.step_cursor(input.tap_y, 4);
         }
         if input.confirm {
+            self.list_cursor = 0;
             self.mode = match self.menu_cursor {
                 1 => Mode::Skills,
                 2 => Mode::Inventory,
+                3 => Mode::SkillTree,
                 _ => Mode::Party,
             };
         }
@@ -840,9 +875,123 @@ impl Game {
     fn update_submenu(&mut self, input: &Input) {
         if input.tab {
             self.mode = Mode::Field;
-        } else if input.pause {
-            self.mode = Mode::Party;
+            return;
         }
+        if input.pause {
+            self.mode = Mode::Party;
+            return;
+        }
+        match self.mode {
+            Mode::Inventory => self.update_inventory(input),
+            Mode::SkillTree => self.update_skill_tree(input),
+            _ => {}
+        }
+    }
+
+    fn update_inventory(&mut self, input: &Input) {
+        let len = self.selected().inventory.len();
+        if len == 0 {
+            return;
+        }
+        if input.tap_y != 0 {
+            self.step_list(input.tap_y, len);
+        }
+        if input.confirm {
+            self.use_item();
+        }
+    }
+
+    fn update_skill_tree(&mut self, input: &Input) {
+        let len = self.project.extras.tree.len();
+        if len == 0 {
+            return;
+        }
+        if input.tap_y != 0 {
+            self.step_list(input.tap_y, len);
+        }
+        if input.confirm {
+            let index = self.list_cursor.min(len - 1);
+            let _ = self.buy_skill(index);
+        }
+    }
+
+    fn step_list(&mut self, tap_y: i32, len: usize) {
+        if len == 0 {
+            return;
+        }
+        if tap_y < 0 {
+            self.list_cursor = (self.list_cursor + len - 1) % len;
+        } else if tap_y > 0 {
+            self.list_cursor = (self.list_cursor + 1) % len;
+        }
+    }
+
+    fn use_item(&mut self) {
+        let index = self.party_index.min(self.characters.len().saturating_sub(1));
+        let cursor = self.list_cursor;
+        let Some(name) = self
+            .characters
+            .get(index)
+            .and_then(|character| character.inventory.get(cursor))
+            .map(|item| item.name.clone())
+        else {
+            return;
+        };
+        let mods = self
+            .project
+            .extras
+            .catalog
+            .iter()
+            .find(|item| item.name == name)
+            .map(|item| item.use_mods.clone())
+            .unwrap_or_default();
+        if mods.is_empty() {
+            return;
+        }
+        self.add_mods(index, &mods);
+        self.characters[index].inventory.remove(cursor);
+        if self.list_cursor > 0 && self.list_cursor >= self.characters[index].inventory.len() {
+            self.list_cursor = self.characters[index].inventory.len().saturating_sub(1);
+        }
+    }
+
+    fn buy_skill(&mut self, index: usize) -> bool {
+        let Some(node) = self.project.extras.tree.get(index).cloned() else {
+            return false;
+        };
+        let who = self.party_index.min(self.characters.len().saturating_sub(1));
+        if self.characters[who].skills.iter().any(|skill| skill == &node.name) {
+            return false;
+        }
+        for need in &node.need_nodes {
+            if !self.has_skill_id(who, need) {
+                return false;
+            }
+        }
+        for need in &node.need_stats {
+            if !need.cmp.eval(self.stat_of(who, &need.stat), need.value) {
+                return false;
+            }
+        }
+        for cost in &node.cost {
+            if self.stat_of(who, &cost.stat) < cost.delta {
+                return false;
+            }
+        }
+        for cost in &node.cost {
+            self.add_stat(who, &cost.stat, -cost.delta);
+        }
+        self.characters[who].skills.push(node.name);
+        true
+    }
+
+    fn has_skill_id(&self, index: usize, id: &str) -> bool {
+        let Some(node) = self.project.extras.tree.iter().find(|node| node.id == id) else {
+            return false;
+        };
+        self.characters
+            .get(index)
+            .is_some_and(|character| character.skills.iter().any(|skill| skill == &node.name))
     }
 
     fn update_world(&mut self, input: &Input) {
@@ -1183,6 +1332,9 @@ impl Game {
                     label: "Next".into(),
                     goto: "end".into(),
                     sets: Vec::new(),
+                    fail: None,
+                    checks: Vec::new(),
+                    mods: Vec::new(),
                 });
                 self.project.dirty = true;
             }
@@ -1206,6 +1358,12 @@ impl Game {
                     require: Vec::new(),
                     choices: Vec::new(),
                     battle: None,
+                    checks: Vec::new(),
+                    mods: Vec::new(),
+                    slot: None,
+                    fail: None,
+                    on_win: Vec::new(),
+                    on_loss: Vec::new(),
                 });
                 self.edit.node_index = self.project.talk.nodes.len() - 1;
                 self.edit.row = 0;
@@ -1404,24 +1562,11 @@ impl Game {
 
     fn open_talk(&mut self) {
         self.halt();
-        self.talk_node = 0;
-        self.talk_choice = 0;
         if self.project.talk.nodes.is_empty() {
             self.begin_fight();
             return;
         }
-        if !self.requirements_met(0) {
-            return;
-        }
-        let instant = {
-            let node = &self.project.talk.nodes[0];
-            node.choices.is_empty() && node.battle.is_some()
-        };
-        if instant {
-            self.start_node_battle(0);
-        } else {
-            self.mode = Mode::Talk;
-        }
+        self.enter_node(0, 0);
     }
 
     fn update_talk(&mut self, input: &Input) {
@@ -1469,9 +1614,15 @@ impl Game {
         else {
             return;
         };
-        for flag in choice.sets {
-            self.flags.insert(flag);
+        if !choice.checks.iter().all(|check| self.check_ok(check)) {
+            self.follow(&choice.fail, 0);
+            return;
         }
+        for flag in &choice.sets {
+            self.flags.insert(flag.clone());
+        }
+        self.add_mods(0, &choice.mods);
+        self.reposition();
         if choice.goto == "end" {
             self.mode = Mode::Field;
             return;
@@ -1486,20 +1637,77 @@ impl Game {
             self.mode = Mode::Field;
             return;
         };
-        self.talk_node = next;
-        self.talk_choice = 0;
-        if !self.requirements_met(next) {
+        self.enter_node(next, 0);
+    }
+
+    fn enter_node(&mut self, index: usize, depth: u8) {
+        if depth > 8 {
             self.mode = Mode::Field;
             return;
         }
-        let instant = {
-            let node = &self.project.talk.nodes[next];
-            node.choices.is_empty() && node.battle.is_some()
-        };
-        if instant {
-            self.start_node_battle(next);
+        self.talk_node = index;
+        self.talk_choice = 0;
+        let mods = self
+            .project
+            .talk
+            .nodes
+            .get(index)
+            .map(|node| node.mods.clone())
+            .unwrap_or_default();
+        self.add_mods(0, &mods);
+        if !self.requirements_met(index) {
+            let fail = self
+                .project
+                .talk
+                .nodes
+                .get(index)
+                .and_then(|node| node.fail.clone());
+            self.follow(&fail, depth);
+            return;
+        }
+        let (empty, has_battle, combat) = self
+            .project
+            .talk
+            .nodes
+            .get(index)
+            .map(|node| {
+                (
+                    node.choices.is_empty(),
+                    node.battle.is_some(),
+                    self.slot_is_combat(node),
+                )
+            })
+            .unwrap_or((true, false, false));
+        if empty && has_battle {
+            if combat {
+                self.start_node_battle(index);
+            } else {
+                self.mode = Mode::Field;
+            }
         } else {
             self.mode = Mode::Talk;
+        }
+    }
+
+    fn follow(&mut self, id: &Option<String>, depth: u8) {
+        let Some(id) = id else {
+            self.mode = Mode::Field;
+            return;
+        };
+        if id == "end" {
+            self.mode = Mode::Field;
+            return;
+        }
+        if let Some(next) = self
+            .project
+            .talk
+            .nodes
+            .iter()
+            .position(|node| node.id == *id)
+        {
+            self.enter_node(next, depth + 1);
+        } else {
+            self.mode = Mode::Field;
         }
     }
 
@@ -1510,6 +1718,33 @@ impl Game {
         node.require
             .iter()
             .all(|need| self.flags.contains(&need.flag) == need.want)
+            && node.checks.iter().all(|check| self.check_ok(check))
+    }
+
+    fn check_ok(&self, check: &Check) -> bool {
+        match check {
+            Check::Flag { flag, want } => self.flags.contains(flag) == *want,
+            Check::Stat { stat, cmp, value } => cmp.eval(self.stat_of(0, stat), *value),
+            Check::Combat { win } => {
+                let want = if *win { Outcome::Win } else { Outcome::Lose };
+                self.last_combat == Some(want)
+            }
+        }
+    }
+
+    fn slot_is_combat(&self, node: &Node) -> bool {
+        let slot = node.slot.as_deref().unwrap_or("combat");
+        self.slot_kind(slot) == "combat"
+    }
+
+    fn slot_kind(&self, name: &str) -> &str {
+        self.project
+            .extras
+            .slots
+            .iter()
+            .find(|slot| slot.name == name)
+            .map(|slot| slot.kind.as_str())
+            .unwrap_or("combat")
     }
 
     fn start_node_battle(&mut self, index: usize) {
@@ -1526,6 +1761,15 @@ impl Game {
             self.mode = Mode::Field;
             return;
         }
+        let slot = self.project.talk.nodes[index]
+            .slot
+            .clone()
+            .unwrap_or_else(|| "combat".into());
+        if self.slot_kind(&slot) != "combat" {
+            self.mode = Mode::Field;
+            return;
+        }
+        self.battle_from = Some(index);
         self.begin_fight();
     }
 
@@ -1704,17 +1948,161 @@ impl Game {
     }
 
     fn apply_outcome(&mut self, outcome: Outcome) {
+        let from = self.battle_from;
         match outcome {
             Outcome::Win => {
                 self.monster_alive = false;
                 self.flags.insert("slime_defeated".into());
+                self.last_combat = Some(Outcome::Win);
+                if let Some(mods) = from
+                    .and_then(|index| self.project.talk.nodes.get(index))
+                    .map(|node| node.on_win.clone())
+                {
+                    self.add_mods(0, &mods);
+                }
             }
-            Outcome::Flee => {}
-            Outcome::Lose => self.player.hp = self.player.max_hp,
+            Outcome::Flee => {
+                self.last_combat = Some(Outcome::Flee);
+            }
+            Outcome::Lose => {
+                self.player.hp = self.player.max_hp;
+                if let Some(character) = self.characters.first_mut() {
+                    character.hp = character.max_hp;
+                }
+                self.last_combat = Some(Outcome::Lose);
+                if let Some(mods) = from
+                    .and_then(|index| self.project.talk.nodes.get(index))
+                    .map(|node| node.on_loss.clone())
+                {
+                    self.add_mods(0, &mods);
+                }
+            }
         }
+        self.reposition();
         self.queued = None;
         self.walk = None;
         self.mode = Mode::Field;
+    }
+
+    pub fn stat_of(&self, index: usize, stat: &str) -> i32 {
+        let Some(character) = self.characters.get(index) else {
+            return 0;
+        };
+        let base = match stat {
+            "hp" => character.hp,
+            "max_hp" => character.max_hp,
+            "atk" => character.atk,
+            "def" => character.def,
+            _ => character
+                .bases
+                .iter()
+                .find(|(id, _)| id == stat)
+                .map(|(_, value)| *value)
+                .unwrap_or(0),
+        };
+        base + self.gear_bonus(index, stat)
+    }
+
+    pub fn add_stat(&mut self, index: usize, stat: &str, delta: i32) {
+        if self.characters.is_empty() {
+            return;
+        }
+        let index = index.min(self.characters.len() - 1);
+        {
+            let character = &mut self.characters[index];
+            match stat {
+                "hp" => {
+                    let max = character.max_hp.max(1);
+                    character.hp = (character.hp + delta).clamp(0, max);
+                }
+                "max_hp" => {
+                    character.max_hp = (character.max_hp + delta).max(1);
+                    character.hp = character.hp.min(character.max_hp);
+                }
+                "atk" => character.atk += delta,
+                "def" => character.def += delta,
+                _ => {
+                    if let Some(pair) = character.bases.iter_mut().find(|(id, _)| id == stat) {
+                        pair.1 += delta;
+                    } else {
+                        character.bases.push((stat.to_string(), delta));
+                    }
+                }
+            }
+        }
+        if index == 0 {
+            let character = &self.characters[0];
+            self.player.name = character.name.clone();
+            self.player.hp = character.hp;
+            self.player.max_hp = character.max_hp.max(1);
+            self.player.atk = character.atk;
+            self.player.def = character.def;
+        }
+    }
+
+    fn add_mods(&mut self, index: usize, mods: &[StatMod]) {
+        for modi in mods {
+            self.add_stat(index, &modi.stat, modi.delta);
+        }
+    }
+
+    fn gear_bonus(&self, index: usize, stat: &str) -> i32 {
+        if matches!(stat, "hp" | "max_hp" | "atk") {
+            return 0;
+        }
+        let Some(character) = self.characters.get(index) else {
+            return 0;
+        };
+        self.project
+            .extras
+            .catalog
+            .iter()
+            .find(|item| item.name == character.weapon_name)
+            .map(|item| {
+                item.equip
+                    .iter()
+                    .filter(|modi| modi.stat == stat)
+                    .map(|modi| modi.delta)
+                    .sum()
+            })
+            .unwrap_or(0)
+    }
+
+    fn reposition(&mut self) {
+        let name = self.monster.name.clone();
+        let relevant: Vec<_> = self
+            .project
+            .extras
+            .placements
+            .iter()
+            .filter(|place| {
+                place.npc.eq_ignore_ascii_case(&name) || place.npc.eq_ignore_ascii_case("slime")
+            })
+            .cloned()
+            .collect();
+        if relevant.is_empty() {
+            return;
+        }
+        if let Some(place) = relevant.iter().find(|place| self.place_ok(place)) {
+            self.mx = place.x;
+            self.my = place.y;
+            if !self.flags.contains("slime_defeated") {
+                self.monster_alive = true;
+            }
+        } else if self.flags.contains("slime_defeated") {
+            self.monster_alive = false;
+        }
+    }
+
+    fn place_ok(&self, place: &content::Placement) -> bool {
+        place
+            .require
+            .iter()
+            .all(|need| self.flag_need(need))
+    }
+
+    fn flag_need(&self, need: &FlagNeed) -> bool {
+        self.flags.contains(&need.flag) == need.want
     }
 
     fn push_log(&mut self, line: impl Into<String>) {
@@ -2194,6 +2582,7 @@ pub fn isolated_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::content::{Check, Cmp, MiniSlot, SkillNode, StatMod, StatNeed};
 
     fn confirm() -> Input {
         Input {
@@ -2518,6 +2907,7 @@ mod tests {
                 name: "Rope".into(),
             }],
             skills: vec!["Focus".into()],
+            bases: Vec::new(),
         });
         let first = game.save_named("Dawn").unwrap();
         game.px = 55;
@@ -2891,5 +3281,180 @@ mod tests {
         assert!(game.monster_alive);
         assert_eq!(game.player.hp, game.player.max_hp);
         assert_eq!(game.monster.hp, 2);
+    }
+
+    #[test]
+    fn a_choice_can_require_a_stat_and_take_the_failure_line() {
+        let mut game = field_game();
+        game.project.talk.nodes.push(Node {
+            id: "stayed".into(),
+            text: "The slime stays.".into(),
+            require: Vec::new(),
+            choices: vec![Choice {
+                label: "Okay".into(),
+                goto: "end".into(),
+                sets: Vec::new(),
+                fail: None,
+                checks: Vec::new(),
+                mods: Vec::new(),
+            }],
+            battle: None,
+            checks: Vec::new(),
+            mods: Vec::new(),
+            slot: None,
+            fail: None,
+            on_win: Vec::new(),
+            on_loss: Vec::new(),
+        });
+        {
+            let choice = &mut game.project.talk.nodes[0].choices[0];
+            choice.checks.push(Check::Stat {
+                stat: "atk".into(),
+                cmp: Cmp::Ge,
+                value: 99,
+            });
+            choice.fail = Some("stayed".into());
+        }
+        stand_next_to_slime(&mut game);
+        game.update(&confirm());
+        game.update(&confirm());
+        assert_eq!(game.mode, Mode::Talk);
+        assert_eq!(game.current_line(), "The slime stays.");
+        assert!(!game.flags.contains("slime_fight"));
+    }
+
+    #[test]
+    fn a_passage_an_item_and_gear_change_named_stats() {
+        let mut game = field_game();
+        game.characters[0].bases.push(("strength".into(), 1));
+        game.project.talk.nodes[0]
+            .mods
+            .push(StatMod {
+                stat: "strength".into(),
+                delta: 2,
+            });
+        stand_next_to_slime(&mut game);
+        game.update(&confirm());
+        assert_eq!(game.stat_of(0, "strength"), 3);
+
+        game.project.extras.catalog.push(crate::content::ItemDef {
+            id: "herb".into(),
+            name: "Herb".into(),
+            folder: "supplies".into(),
+            equip: Vec::new(),
+            use_mods: vec![StatMod {
+                stat: "hp".into(),
+                delta: 5,
+            }],
+        });
+        game.characters[0].hp = 10;
+        game.player.hp = 10;
+        game.characters[0].inventory.push(Item {
+            name: "Herb".into(),
+        });
+        game.mode = Mode::Inventory;
+        game.list_cursor = 0;
+        game.update(&confirm());
+        assert_eq!(game.player.hp, 15);
+        assert!(game.characters[0].inventory.is_empty());
+
+        game.project.extras.catalog.push(crate::content::ItemDef {
+            id: "sword".into(),
+            name: "Short Sword".into(),
+            folder: "gear".into(),
+            equip: vec![StatMod {
+                stat: "strength".into(),
+                delta: 2,
+            }],
+            use_mods: Vec::new(),
+        });
+        assert_eq!(game.stat_of(0, "strength"), 5);
+    }
+
+    #[test]
+    fn the_skill_tree_spends_a_stat_and_can_require_another_node() {
+        let mut game = field_game();
+        game.characters[0].bases.push(("strength".into(), 3));
+        game.project.extras.tree.push(SkillNode {
+            id: "steady".into(),
+            name: "Steady".into(),
+            x: 0,
+            y: 0,
+            cost: vec![StatMod {
+                stat: "strength".into(),
+                delta: 1,
+            }],
+            need_stats: vec![StatNeed {
+                stat: "strength".into(),
+                cmp: Cmp::Ge,
+                value: 2,
+            }],
+            need_nodes: Vec::new(),
+        });
+        game.project.extras.tree.push(SkillNode {
+            id: "riposte".into(),
+            name: "Riposte".into(),
+            x: 40,
+            y: 0,
+            cost: Vec::new(),
+            need_stats: Vec::new(),
+            need_nodes: vec!["steady".into()],
+        });
+        game.mode = Mode::SkillTree;
+        game.list_cursor = 1;
+        game.update(&confirm());
+        assert!(game.characters[0].skills.is_empty());
+        game.list_cursor = 0;
+        game.update(&confirm());
+        assert_eq!(game.stat_of(0, "strength"), 2);
+        assert_eq!(game.characters[0].skills, vec!["Steady".to_string()]);
+        game.list_cursor = 1;
+        game.update(&confirm());
+        assert_eq!(game.characters[0].skills[1], "Riposte");
+    }
+
+    #[test]
+    fn combat_is_called_through_a_named_slot() {
+        let mut game = field_game();
+        game.project.talk.nodes[1].slot = Some("combat".into());
+        game.project.extras.slots.push(MiniSlot {
+            name: "combat".into(),
+            kind: "combat".into(),
+        });
+        game.project.talk.nodes[1].on_win.push(StatMod {
+            stat: "strength".into(),
+            delta: 1,
+        });
+        game.characters[0].bases.push(("strength".into(), 0));
+        enter_battle(&mut game);
+        assert!(game.flags.contains("slime_fight"));
+        game.monster.hp = 1;
+        game.update(&confirm());
+        idle(&mut game, u16::from(BEAT) + u16::from(LEAVE) + 4);
+        assert_eq!(game.mode, Mode::Field);
+        assert!(!game.monster_alive);
+        assert_eq!(game.stat_of(0, "strength"), 1);
+
+        let mut game = field_game();
+        game.project.talk.nodes[1].slot = Some("fish".into());
+        game.project.extras.slots.push(MiniSlot {
+            name: "fish".into(),
+            kind: "fish".into(),
+        });
+        stand_next_to_slime(&mut game);
+        game.update(&confirm());
+        game.update(&confirm());
+        assert_eq!(game.mode, Mode::Field);
+        assert!(game.monster_alive);
+    }
+
+    #[test]
+    fn a_combat_check_reads_the_last_result() {
+        let mut game = field_game();
+        game.last_combat = Some(Outcome::Win);
+        assert!(game.check_ok(&Check::Combat { win: true }));
+        assert!(!game.check_ok(&Check::Combat { win: false }));
+        game.last_combat = Some(Outcome::Lose);
+        assert!(game.check_ok(&Check::Combat { win: false }));
     }
 }

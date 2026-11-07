@@ -11,6 +11,9 @@ license = "MIT"
 softbuffer = { version = "=0.4.6", default-features = false, features = ["x11", "x11-dlopen"] }
 winit = { version = "=0.30.9", default-features = false, features = ["rwh_06", "x11"] }
 png = "=0.17.16"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
 
 # winit's Windows backend uses unicode-segmentation. 1.13.3 needs rustc 1.85,
 # so Cargo.lock pins 1.12.0, which still satisfies winit's ^1.7.1 requirement.

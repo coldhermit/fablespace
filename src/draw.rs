@@ -121,6 +121,7 @@ pub fn draw(fb: &mut [u32], game: &Game) {
                 };
                 draw_list(fb, "Inventory", &character.name, &lines, placeholder);
             }
+            Mode::SkillTree => draw_skill_tree(fb, game),
             _ => {}
         }
     }
@@ -174,6 +175,7 @@ fn overlay(mode: Mode) -> bool {
             | Mode::Party
             | Mode::Skills
             | Mode::Inventory
+            | Mode::SkillTree
     )
 }
 
@@ -237,11 +239,29 @@ fn draw_field(fb: &mut [u32], game: &Game) {
             );
         }
     }
+    for entity in &game.project.extras.entities {
+        if entity.map == game.project.map_name || entity.map == "field" {
+            let x = entity.x * tile - cam_x + 8;
+            let y = entity.y * tile - cam_y + 10;
+            fill(fb, x, y, 16, 14, 0xC4893A);
+            fill(fb, x + 2, y - 4, 12, 4, 0xE2B15A);
+        }
+    }
     if game.monster_alive {
         let x = game.mx * tile - cam_x;
         let y = game.my * tile - cam_y;
         shadow(fb, x, y, SCALE);
-        blit(fb, atlas::SPR_SLIME, x, y, SCALE);
+        blit_actor(
+            fb,
+            &game.project.extras.sprites,
+            game.anim,
+            &game.monster.name,
+            "overworld",
+            atlas::SPR_SLIME,
+            x,
+            y,
+            SCALE,
+        );
     }
     let (px, mut py) = game.player_px();
     if game.bobbing() {
@@ -250,7 +270,17 @@ fn draw_field(fb: &mut [u32], game: &Game) {
     let x = px * SCALE - cam_x;
     let y = py * SCALE - cam_y;
     shadow(fb, x, y, SCALE);
-    blit(fb, atlas::SPR_PLAYER, x, y, SCALE);
+    blit_actor(
+        fb,
+        &game.project.extras.sprites,
+        game.anim,
+        &game.player.name,
+        "overworld",
+        atlas::SPR_PLAYER,
+        x,
+        y,
+        SCALE,
+    );
 
     if show_talk(game.mode) {
         draw_dialogue(fb, game);
@@ -342,10 +372,30 @@ fn draw_battle(fb: &mut [u32], game: &Game) {
     let sprite = TILE * PORTRAIT;
     let slime_x = WIDTH - 288 - sprite;
     shadow(fb, 288, 132, PORTRAIT);
-    blit(fb, atlas::SPR_PLAYER, 288, 132, PORTRAIT);
+    blit_actor(
+        fb,
+        &game.project.extras.sprites,
+        game.anim,
+        &game.player.name,
+        "combat",
+        atlas::SPR_PLAYER,
+        288,
+        132,
+        PORTRAIT,
+    );
     if game.monster.hp > 0 {
         shadow(fb, slime_x, 132, PORTRAIT);
-        blit(fb, atlas::SPR_SLIME, slime_x, 132, PORTRAIT);
+        blit_actor(
+            fb,
+            &game.project.extras.sprites,
+            game.anim,
+            &game.monster.name,
+            "combat",
+            atlas::SPR_SLIME,
+            slime_x,
+            132,
+            PORTRAIT,
+        );
     }
 
     fighter_card(fb, 144, false, &game.player, GOLD);
@@ -472,48 +522,126 @@ fn draw_menu(
 }
 
 fn draw_party(fb: &mut [u32], game: &Game) {
-    let w = 1080;
-    let h = (760 + game.characters.len() as i32 * 72).min(HEIGHT - 48);
+    let w = 1560;
+    let h = 900.min(HEIGHT - 48);
     let x = (WIDTH - w) / 2;
     let y = (HEIGHT - h) / 2;
     panel(fb, x, y, w, h);
-    text_centered(fb, WIDTH / 2, y + 40, "Party", GOLD);
-    let left = x + 72;
-    let mut line = y + 140;
+    text_centered(fb, WIDTH / 2, y + 36, "Party", GOLD);
+    let character = game.selected();
     let selected = game
         .party_index
         .min(game.characters.len().saturating_sub(1));
-    for (i, character) in game.characters.iter().enumerate() {
+    let mut line = y + 120;
+    for (i, member) in game.characters.iter().enumerate() {
         let active = game.menu_cursor == 0 && i == selected;
         if active {
-            fill(fb, x + 40, line - 16, w - 80, 64, SELECT);
-            text(fb, left, line, ">", GOLD);
+            fill(fb, x + 36, line - 12, 460, 52, SELECT);
+            text(fb, x + 48, line, ">", GOLD);
         }
         let color = if i == selected { CREAM } else { DIM };
-        text(fb, left + 48, line, &character.name, color);
-        line += 72;
+        text(fb, x + 96, line, &member.name, color);
+        line += 64;
     }
-    line += 16;
-    text(fb, left, line, "Equip", DIM);
-    line += 72;
-    let character = game.selected();
-    text(fb, left, line, &character.weapon_name, CREAM);
-    line += 64;
+    let col_y = y + 120 + game.characters.len() as i32 * 64 + 24;
+    text(fb, x + 48, col_y, "Equipment", GOLD);
+    text(fb, x + 560, col_y, "Inventory", GOLD);
+    text(fb, x + 1060, col_y, "Skill tree", GOLD);
+    text(fb, x + 48, col_y + 56, &character.weapon_name, CREAM);
     let bonus = format!("+{} attack", character.weapon_atk);
-    text(fb, left, line, &bonus, GOLD);
-    line += 100;
-    for (index, label) in [(1, "Skills"), (2, "Inventory")] {
-        if game.menu_cursor == index {
-            fill(fb, x + 40, line - 16, w - 80, 64, SELECT);
-            text(fb, left, line, ">", GOLD);
+    text(fb, x + 48, col_y + 104, &bonus, DIM);
+    let mut extra = col_y + 160;
+    for (stat, value) in gear_lines(game) {
+        text(fb, x + 48, extra, &format!("{stat} {value:+}"), CREAM);
+        extra += 40;
+    }
+    if character.inventory.is_empty() {
+        text(fb, x + 560, col_y + 56, "(empty)", DIM);
+    } else {
+        for (i, item) in character.inventory.iter().enumerate().take(8) {
+            text(fb, x + 560, col_y + 56 + i as i32 * 44, &item.name, CREAM);
         }
-        let color = if game.menu_cursor == index {
-            CREAM
+    }
+    if game.project.extras.tree.is_empty() {
+        text(fb, x + 1060, col_y + 56, "No nodes yet.", DIM);
+    } else {
+        for (i, node) in game.project.extras.tree.iter().enumerate().take(8) {
+            let owned = character.skills.iter().any(|skill| skill == &node.name);
+            let label = if owned {
+                format!("{}  owned", node.name)
+            } else {
+                node.name.clone()
+            };
+            text(
+                fb,
+                x + 1060,
+                col_y + 56 + i as i32 * 44,
+                &label,
+                if owned { GOLD } else { CREAM },
+            );
+        }
+    }
+    let mut row = y + h - 250;
+    for (index, label) in [(1, "Skills"), (2, "Inventory"), (3, "Skill Tree")] {
+        if game.menu_cursor == index {
+            fill(fb, x + 36, row - 12, w - 72, 52, SELECT);
+            text(fb, x + 48, row, ">", GOLD);
+        }
+        let color = if game.menu_cursor == index { CREAM } else { DIM };
+        text(fb, x + 96, row, label, color);
+        row += 64;
+    }
+}
+
+fn gear_lines(game: &Game) -> Vec<(String, i32)> {
+    let Some(item) = game
+        .project
+        .extras
+        .catalog
+        .iter()
+        .find(|item| item.name == game.selected().weapon_name)
+    else {
+        return Vec::new();
+    };
+    item.equip
+        .iter()
+        .filter(|modi| modi.stat != "atk")
+        .map(|modi| (modi.stat.clone(), modi.delta))
+        .collect()
+}
+
+fn draw_skill_tree(fb: &mut [u32], game: &Game) {
+    let w = 1200;
+    let h = 820;
+    let x = (WIDTH - w) / 2;
+    let y = (HEIGHT - h) / 2;
+    panel(fb, x, y, w, h);
+    text_centered(fb, WIDTH / 2, y + 40, "Skill tree", GOLD);
+    let character = game.selected();
+    text(fb, x + 64, y + 110, &character.name, CREAM);
+    if game.project.extras.tree.is_empty() {
+        text(fb, x + 64, y + 190, "No nodes yet.", DIM);
+        return;
+    }
+    for (i, node) in game.project.extras.tree.iter().enumerate().take(8) {
+        let row = y + 180 + i as i32 * 72;
+        let selected = i == game.list_cursor;
+        if selected {
+            fill(fb, x + 40, row - 12, w - 80, 60, SELECT);
+            text(fb, x + 56, row, ">", GOLD);
+        }
+        let owned = character.skills.iter().any(|skill| skill == &node.name);
+        let cost = if node.cost.is_empty() {
+            "free".to_string()
         } else {
-            DIM
+            node.cost
+                .iter()
+                .map(|cost| format!("-{} {}", cost.delta, cost.stat))
+                .collect::<Vec<_>>()
+                .join(", ")
         };
-        text(fb, left + 48, line, label, color);
-        line += 78;
+        let label = format!("{}   {cost}", node.name);
+        text(fb, x + 104, row, &label, if owned { GOLD } else { CREAM });
     }
 }
 
@@ -709,6 +837,56 @@ fn glyphs(fb: &mut [u32], x: i32, y: i32, s: &str, color: u32, scale: i32, max_x
 
 fn text_width(s: &str) -> i32 {
     s.chars().count() as i32 * 8 * FONT_SCALE
+}
+
+fn blit_actor(
+    fb: &mut [u32],
+    sprites: &[crate::content::SpriteStrip],
+    anim: u32,
+    owner: &str,
+    role: &str,
+    fallback: i32,
+    x: i32,
+    y: i32,
+    scale: i32,
+) {
+    let strip = sprites
+        .iter()
+        .find(|sprite| sprite.owner.eq_ignore_ascii_case(owner) && sprite.role == role)
+        .or_else(|| {
+            sprites
+                .iter()
+                .find(|sprite| sprite.owner.eq_ignore_ascii_case(owner) && sprite.role == "overworld")
+        });
+    if let Some(strip) = strip {
+        let frames = strip.frames.max(1);
+        let frame = (anim as i32 / 10).rem_euclid(frames);
+        blit_strip(fb, &strip.pixels, frames, frame, x, y, scale);
+    } else {
+        blit(fb, fallback, x, y, scale);
+    }
+}
+
+fn blit_strip(fb: &mut [u32], pixels: &[u8], frames: i32, frame: i32, dx: i32, dy: i32, scale: i32) {
+    let stride = (TILE * TILE * 4) as usize;
+    let start = frame.clamp(0, frames - 1) as usize * stride;
+    let Some(tile) = pixels.get(start..start + stride) else {
+        return;
+    };
+    for y in 0..TILE {
+        for x in 0..TILE {
+            let i = ((y * TILE + x) * 4) as usize;
+            if tile[i + 3] < 128 {
+                continue;
+            }
+            let color = ((tile[i] as u32) << 16) | ((tile[i + 1] as u32) << 8) | tile[i + 2] as u32;
+            for sy in 0..scale {
+                for sx in 0..scale {
+                    plot(fb, dx + x * scale + sx, dy + y * scale + sy, color);
+                }
+            }
+        }
+    }
 }
 
 fn blit_sheet(

@@ -1,4 +1,6 @@
 /target
+/author/src-tauri/target
+/author/src-tauri/gen
 /field-battle.exe
 /settings.txt
 /save-*.txt

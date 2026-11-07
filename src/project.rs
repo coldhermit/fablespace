@@ -2,8 +2,10 @@
 //!
 //! The game looks beside the executable, then in `./project`, then falls
 //! back to the copy compiled into the binary. Edit mode writes the same
-//! files back out.
+//! files back out. Named stats, items, the skill tree, sprites, and
+//! minigame slots are optional files beside those three.
 
+use crate::content::{self, Check, Extras, StatMod};
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -58,6 +60,8 @@ pub struct Character {
     pub def: i32,
     pub inventory: Vec<Item>,
     pub skills: Vec<String>,
+    /// Named stats other than hp, max hp, attack, and defense.
+    pub bases: Vec<(String, i32)>,
 }
 
 impl Character {
@@ -72,6 +76,7 @@ impl Character {
             def: 2,
             inventory: Vec::new(),
             skills: Vec::new(),
+            bases: Vec::new(),
         }
     }
 
@@ -86,6 +91,7 @@ impl Character {
             def: 1,
             inventory: Vec::new(),
             skills: Vec::new(),
+            bases: Vec::new(),
         }
     }
 
@@ -112,6 +118,9 @@ impl Character {
             out.push_str(skill);
             out.push('\n');
         }
+        for (stat, value) in &self.bases {
+            out.push_str(&format!("base {stat} {value}\n"));
+        }
     }
 }
 
@@ -128,6 +137,9 @@ pub struct Choice {
     pub label: String,
     pub goto: String,
     pub sets: Vec<String>,
+    pub fail: Option<String>,
+    pub checks: Vec<Check>,
+    pub mods: Vec<StatMod>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -143,6 +155,13 @@ pub struct Node {
     pub require: Vec<Need>,
     pub choices: Vec<Choice>,
     pub battle: Option<BattleLink>,
+    pub checks: Vec<Check>,
+    pub mods: Vec<StatMod>,
+    /// Named minigame slot. Combat is the slot this slice runs.
+    pub slot: Option<String>,
+    pub fail: Option<String>,
+    pub on_win: Vec<StatMod>,
+    pub on_loss: Vec<StatMod>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -218,6 +237,7 @@ pub struct Project {
     pub party: Vec<Character>,
     pub talk: Talk,
     pub sheet: Sheet,
+    pub extras: Extras,
     pub dirty: bool,
 }
 
@@ -248,6 +268,7 @@ impl Project {
         let party = fs::read_to_string(dir.join("party.txt")).map_err(|err| err.to_string())?;
         let talk = fs::read_to_string(dir.join("talk.txt")).map_err(|err| err.to_string())?;
         let mut project = Self::parse(&field, &party, &talk)?;
+        project.extras = Extras::read_dir(dir)?;
         let rgba = dir.join("tiles.rgba");
         let meta = dir.join("tiles.txt");
         if rgba.is_file() && meta.is_file() {
@@ -270,6 +291,7 @@ impl Project {
             )?;
             fs::write(dir.join("tiles.rgba"), &self.sheet.pixels)?;
         }
+        self.extras.write_dir(dir)?;
         Ok(())
     }
 
@@ -397,6 +419,24 @@ impl Project {
                     out.push_str(&format!("require !{}\n", need.flag));
                 }
             }
+            for check in &node.checks {
+                check.write_line(&mut out);
+            }
+            for modi in &node.mods {
+                out.push_str(&format!("mod {} {}\n", modi.stat, modi.delta));
+            }
+            if let Some(slot) = &node.slot {
+                out.push_str(&format!("minigame {slot}\n"));
+            }
+            for modi in &node.on_win {
+                out.push_str(&format!("win {} {}\n", modi.stat, modi.delta));
+            }
+            for modi in &node.on_loss {
+                out.push_str(&format!("loss {} {}\n", modi.stat, modi.delta));
+            }
+            if let Some(fail) = &node.fail {
+                out.push_str(&format!("fail {fail}\n"));
+            }
             if let Some(battle) = &node.battle {
                 out.push_str(&format!("battle {} {}\n", battle.entity, battle.map));
             }
@@ -404,6 +444,15 @@ impl Project {
                 out.push_str(&format!("choice {} {}\n", choice.label, choice.goto));
                 for flag in &choice.sets {
                     out.push_str(&format!("set {flag}\n"));
+                }
+                for check in &choice.checks {
+                    check.write_line(&mut out);
+                }
+                for modi in &choice.mods {
+                    out.push_str(&format!("mod {} {}\n", modi.stat, modi.delta));
+                }
+                if let Some(fail) = &choice.fail {
+                    out.push_str(&format!("fail {fail}\n"));
                 }
             }
         }
@@ -433,15 +482,20 @@ pub fn terrain_char(terrain: Terrain) -> char {
 }
 
 pub fn import_png(path: &Path) -> Result<Sheet, String> {
-    let file = fs::File::open(path).map_err(|err| err.to_string())?;
-    let mut decoder = png::Decoder::new(file);
+    let bytes = fs::read(path).map_err(|err| err.to_string())?;
+    let (width, height, rgba) = decode_png_bytes(&bytes)?;
+    Sheet::from_rgba(width, height, &rgba)
+}
+
+pub fn decode_png_bytes(bytes: &[u8]) -> Result<(i32, i32, Vec<u8>), String> {
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info().map_err(|err| err.to_string())?;
     let mut buf = vec![0; reader.output_buffer_size()];
     let frame = reader.next_frame(&mut buf).map_err(|err| err.to_string())?;
     let width = frame.width as i32;
     let height = frame.height as i32;
-    if width > 2048 || height > 2048 {
+    if width > 2048 || height > 2048 || width <= 0 || height <= 0 {
         return Err("image is too large".into());
     }
     let channels = match frame.color_type {
@@ -467,7 +521,7 @@ pub fn import_png(path: &Path) -> Result<Sheet, String> {
         rgba[d + 2] = b;
         rgba[d + 3] = a;
     }
-    Sheet::from_rgba(width, height, &rgba)
+    Ok((width, height, rgba))
 }
 
 fn read_sheet(rgba: &Path, meta: &Path) -> Result<Sheet, String> {
@@ -640,6 +694,7 @@ fn parse_field(text: &str) -> Result<Project, String> {
         party: Vec::new(),
         talk: Talk { nodes: Vec::new() },
         sheet: Sheet::default(),
+        extras: Extras::default(),
         dirty: false,
     })
 }
@@ -734,6 +789,20 @@ pub fn parse_character(lines: &[&str], index: &mut usize) -> Result<Character, S
         }
         skills.push(skill.to_string());
     }
+    let mut bases = Vec::new();
+    while *index < lines.len() {
+        let Some(rest) = lines[*index].strip_prefix("base ") else {
+            break;
+        };
+        let mut parts = rest.split_whitespace();
+        let stat = parts.next().ok_or("base")?.to_string();
+        let value: i32 = parts.next().ok_or("base")?.parse().map_err(|_| "base")?;
+        *index += 1;
+        if stat.is_empty() {
+            return Err("base".into());
+        }
+        bases.push((stat, value));
+    }
     Ok(Character {
         name,
         weapon_name,
@@ -744,6 +813,7 @@ pub fn parse_character(lines: &[&str], index: &mut usize) -> Result<Character, S
         def,
         inventory,
         skills,
+        bases,
     })
 }
 
@@ -781,6 +851,12 @@ pub fn parse_talk(text: &str) -> Result<Talk, String> {
                 require: Vec::new(),
                 choices: Vec::new(),
                 battle: None,
+                checks: Vec::new(),
+                mods: Vec::new(),
+                slot: None,
+                fail: None,
+                on_win: Vec::new(),
+                on_loss: Vec::new(),
             });
             continue;
         }
@@ -789,6 +865,42 @@ pub fn parse_talk(text: &str) -> Result<Talk, String> {
             node.text = text.to_string();
         } else if line == "text" {
             node.text.clear();
+        } else if let Some(rest) = line.strip_prefix("when ") {
+            let check = content::parse_when(rest)?;
+            if node.choices.is_empty() {
+                node.checks.push(check);
+            } else {
+                node.choices
+                    .last_mut()
+                    .ok_or("when")?
+                    .checks
+                    .push(check);
+            }
+        } else if let Some(rest) = line.strip_prefix("mod ") {
+            let modi = content::parse_mod(rest)?;
+            if node.choices.is_empty() {
+                node.mods.push(modi);
+            } else {
+                node.choices.last_mut().ok_or("mod")?.mods.push(modi);
+            }
+        } else if let Some(slot) = line.strip_prefix("minigame ") {
+            if slot.is_empty() || slot.contains(char::is_whitespace) {
+                return Err("minigame".into());
+            }
+            node.slot = Some(slot.to_string());
+        } else if let Some(rest) = line.strip_prefix("win ") {
+            node.on_win.push(content::parse_mod(rest)?);
+        } else if let Some(rest) = line.strip_prefix("loss ") {
+            node.on_loss.push(content::parse_mod(rest)?);
+        } else if let Some(fail) = line.strip_prefix("fail ") {
+            if fail.is_empty() || fail.contains(char::is_whitespace) {
+                return Err("fail".into());
+            }
+            if node.choices.is_empty() {
+                node.fail = Some(fail.to_string());
+            } else {
+                node.choices.last_mut().ok_or("fail")?.fail = Some(fail.to_string());
+            }
         } else if let Some(flag) = line.strip_prefix("require ") {
             let (flag, want) = if let Some(flag) = flag.strip_prefix('!') {
                 (flag, false)
@@ -821,6 +933,9 @@ pub fn parse_talk(text: &str) -> Result<Talk, String> {
                 label,
                 goto,
                 sets: Vec::new(),
+                fail: None,
+                checks: Vec::new(),
+                mods: Vec::new(),
             });
         } else if let Some(flag) = line.strip_prefix("set ") {
             if flag.is_empty() {

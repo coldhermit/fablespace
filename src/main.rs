@@ -6,13 +6,8 @@
 
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-mod atlas;
-mod draw;
-mod font;
-mod game;
-mod project;
-
-use game::{Input, HEIGHT, WIDTH};
+use field_battle::draw;
+use field_battle::game::{self, Input, HEIGHT, WIDTH};
 use softbuffer::{Context, Surface};
 use std::num::NonZeroU32;
 use std::sync::Arc;
