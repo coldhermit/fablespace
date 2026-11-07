@@ -1,7 +1,10 @@
 /target
 /author/src-tauri/target
 /author/src-tauri/gen
+/field-battle
 /field-battle.exe
+/fablespace-author
+/fablespace-author.exe
 /settings.txt
 /save-*.txt
 /slots

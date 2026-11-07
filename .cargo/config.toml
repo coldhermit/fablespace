@@ -1,6 +1,6 @@
-# Statically link the mingw CRT so a cross-built exe does not need libgcc
-# or winpthread beside it. A Windows rustup install uses the msvc target
-# and ignores this block. System libraries (kernel32, user32, gdi32) stay dynamic.
+# Statically link the mingw CRT so a Windows exe does not need libgcc or
+# winpthread beside it. The linker itself is chosen by the host toolchain.
+# build.sh sets the Linux cross linker only for the Windows cross build.
+# System libraries (kernel32, user32, gdi32) stay dynamic.
 [target.x86_64-pc-windows-gnu]
-linker = "x86_64-w64-mingw32-gcc"
 rustflags = ["-C", "target-feature=+crt-static"]
