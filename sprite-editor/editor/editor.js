@@ -41,7 +41,9 @@
     onion: false,
     dim: true,
     playing: true,
-    trace: { dataUrl: null, image: null, opacity: 0.45, visible: true, scale: 1, x: 0, y: 0, move: false },
+    traces: [],
+    trace: { dataUrl: null, image: null, opacity: 0.45, visible: true, scale: 1, x: 0, y: 0 },
+    traceMove: false,
     selection: null,
     clipboard: null,
     undo: [],
@@ -53,6 +55,7 @@
   let gesture = null;
   let colorTarget = "primary";
   let pan = null;
+  let hand = false;
   let hover = null;
   let previewTick = 0;
   let lastPreview = 0;
@@ -80,6 +83,31 @@
     return state.layers[0].frames.length;
   }
 
+  function blankTrace() {
+    return { dataUrl: null, image: null, opacity: 0.45, visible: true, scale: 1, x: 0, y: 0 };
+  }
+
+  function copyTrace(trace) {
+    return {
+      dataUrl: trace.dataUrl,
+      image: trace.image,
+      opacity: trace.opacity,
+      visible: trace.visible,
+      scale: trace.scale,
+      x: trace.x,
+      y: trace.y,
+    };
+  }
+
+  function syncTraceCount() {
+    if (!state.layers[0]) return;
+    const count = state.layers[0].frames.length;
+    while (state.traces.length < count) state.traces.push(blankTrace());
+    if (state.traces.length > count) state.traces.length = count;
+    if (state.frame >= state.traces.length) state.frame = Math.max(0, state.traces.length - 1);
+    state.trace = state.traces[state.frame];
+  }
+
   function currentBuffer() {
     return state.layers[state.layer].frames[state.frame];
   }
@@ -103,14 +131,7 @@
         visible: layer.visible,
         frames: layer.frames.map((frame) => P.clone(frame)),
       })),
-      trace: {
-        dataUrl: state.trace.dataUrl,
-        opacity: state.trace.opacity,
-        visible: state.trace.visible,
-        scale: state.trace.scale,
-        x: state.trace.x,
-        y: state.trace.y,
-      },
+      traces: state.traces.map((trace) => copyTrace(trace)),
       selection: state.selection
         ? {
             x: state.selection.x,
@@ -137,11 +158,23 @@
       visible: layer.visible,
       frames: layer.frames.map((frame) => P.clone(frame)),
     }));
-    state.trace.opacity = snap.trace.opacity;
-    state.trace.visible = snap.trace.visible;
-    state.trace.scale = snap.trace.scale;
-    state.trace.x = snap.trace.x;
-    state.trace.y = snap.trace.y;
+    const previous = state.traces;
+    state.traces = (snap.traces || []).map((trace) => {
+      const same = previous.find((item) => item.dataUrl && item.dataUrl === trace.dataUrl && item.image);
+      return {
+        dataUrl: trace.dataUrl || null,
+        image: same ? same.image : null,
+        opacity: trace.opacity == null ? 0.45 : trace.opacity,
+        visible: trace.visible !== false,
+        scale: trace.scale == null ? 1 : trace.scale,
+        x: trace.x || 0,
+        y: trace.y || 0,
+      };
+    });
+    syncTraceCount();
+    state.traces.forEach((trace) => {
+      if (trace.dataUrl && !trace.image) loadTraceInto(trace, trace.dataUrl, false);
+    });
     state.selection = snap.selection
       ? {
           x: snap.selection.x,
@@ -152,7 +185,6 @@
           pixels: P.clone(snap.selection.pixels),
         }
       : null;
-    if (snap.trace.dataUrl !== state.trace.dataUrl) loadTrace(snap.trace.dataUrl, false);
     syncTraceControls();
     $("fps").value = state.fps;
     buildLayers();
@@ -187,6 +219,9 @@
     state.frame = 0;
     state.layer = 0;
     state.layers = [makeLayer("Layer 1", [blank()])];
+    state.traces = [blankTrace()];
+    state.trace = state.traces[0];
+    traceSample = null;
     state.selection = null;
     state.undo = [];
     state.redo = [];
@@ -489,7 +524,7 @@ function deleteSelection() {
   }
 
   function onPointerDown(evt) {
-    if (evt.button === 1) {
+    if (evt.button === 1 || (hand && evt.button === 0)) {
       pan = { x: evt.clientX, y: evt.clientY, panX: state.panX, panY: state.panY };
       try { canvas.setPointerCapture(evt.pointerId); } catch (err) { /* Synthetic events in tests have no capture. */ }
       return;
@@ -502,7 +537,7 @@ function deleteSelection() {
       pickColor(x, y, evt.button, { x: point[0], y: point[1], spriteOnly: evt.shiftKey });
       return;
     }
-    if (state.trace.move) {
+    if (state.traceMove) {
       pushUndo();
       gesture = { kind: "trace", x: evt.clientX, y: evt.clientY, ox: state.trace.x, oy: state.trace.y };
       try { canvas.setPointerCapture(evt.pointerId); } catch (err) { /* Synthetic events in tests have no capture. */ }
@@ -613,20 +648,21 @@ function deleteSelection() {
   }
 
   function clampPan() {
-    const vw = view.clientWidth;
-    const vh = view.clientHeight;
+    const vw = Math.max(1, view.clientWidth);
+    const vh = Math.max(1, view.clientHeight);
     const sw = state.width * state.zoom;
     const sh = state.height * state.zoom;
-    if (sw <= vw) state.panX = Math.round((vw - sw) / 2);
-    else state.panX = Math.min(0, Math.max(vw - sw, state.panX));
-    if (sh <= vh) state.panY = Math.round((vh - sh) / 2);
-    else state.panY = Math.min(0, Math.max(vh - sh, state.panY));
+    const keep = 64;
+    state.panX = Math.min(vw - keep, Math.max(keep - sw, state.panX));
+    state.panY = Math.min(vh - keep, Math.max(keep - sh, state.panY));
   }
 
   function fit() {
     const vw = Math.max(1, view.clientWidth);
     const vh = Math.max(1, view.clientHeight);
     state.zoom = Math.max(1, Math.min(maxZoom(), Math.floor(Math.min(vw / state.width, vh / state.height))));
+    state.panX = Math.round((vw - state.width * state.zoom) / 2);
+    state.panY = Math.round((vh - state.height * state.zoom) / 2);
     clampPan();
   }
 
@@ -683,6 +719,7 @@ function deleteSelection() {
   }
 
   function render() {
+    syncTraceCount();
     const dpr = window.devicePixelRatio || 1;
     const cssW = view.clientWidth;
     const cssH = view.clientHeight;
@@ -738,7 +775,7 @@ function deleteSelection() {
       ctx.stroke();
       ctx.restore();
     }
-    if (hover && state.tool !== "picker" && state.tool !== "select" && state.tool !== "move" && !state.trace.move) {
+    if (hover && state.tool !== "picker" && state.tool !== "select" && state.tool !== "move" && !state.traceMove) {
       const [hx, hy] = hover;
       const o = P.stampOrigin(state.size);
       ctx.save();
@@ -851,17 +888,17 @@ function paintPreview() {
     $("btn-tile").classList.toggle("on", state.tile);
     $("btn-onion").classList.toggle("on", state.onion);
     $("btn-dim").classList.toggle("on", state.dim);
-    $("trace-move").classList.toggle("on", state.trace.move);
+    $("trace-move").classList.toggle("on", state.traceMove);
     $("trace-visible").classList.toggle("on", state.trace.visible);
-    $("trace-scale").disabled = !state.trace.move;
-    $("trace-scale-num").disabled = !state.trace.move;
-    $("trace-scale").title = state.trace.move
+    $("trace-scale").disabled = !state.traceMove;
+    $("trace-scale-num").disabled = !state.traceMove;
+    $("trace-scale").title = state.traceMove
       ? "100% fits the picture inside the sprite. Drag left to make it smaller."
       : "Turn on Move trace to change the size.";
     $("btn-play").textContent = state.playing ? "Pause" : "Play";
     $("btn-play").classList.toggle("on", state.playing);
     paintSwatches();
-    view.style.cursor = state.tool === "picker" ? "crosshair" : state.trace.move ? "move" : state.tool === "move" || state.tool === "select" ? "default" : "crosshair";
+    view.style.cursor = hand ? "grab" : state.tool === "picker" ? "crosshair" : state.traceMove ? "move" : state.tool === "move" || state.tool === "select" ? "default" : "crosshair";
   }
 
   function setTool(name) {
@@ -890,10 +927,15 @@ function paintPreview() {
       thumb.width = 64;
       thumb.height = 52;
       const label = document.createElement("span");
-      label.textContent = String(i + 1);
+      label.textContent = state.traces[i] && state.traces[i].dataUrl ? String(i + 1) + "·" : String(i + 1);
+      button.title = state.traces[i] && state.traces[i].dataUrl ? "Frame " + (i + 1) + " has its own tracing picture" : "Frame " + (i + 1);
       button.append(thumb, label);
       button.addEventListener("click", () => {
+        syncTraceCount();
         state.frame = i;
+        state.trace = state.traces[state.frame];
+        traceSample = null;
+        syncTraceControls();
         buildFrames();
         render();
       });
@@ -1039,39 +1081,49 @@ function paintPreview() {
     });
   }
 
-  function loadTrace(dataUrl, fitImage) {
+  function loadTraceInto(trace, dataUrl, fitImage) {
+    const showing = () => trace === state.trace;
     return new Promise((resolve) => {
       if (!dataUrl) {
-        const hadImage = Boolean(state.trace.dataUrl);
-        traceSample = null;
-        state.trace.dataUrl = null;
-        state.trace.image = null;
+        const hadImage = Boolean(trace.dataUrl);
+        if (showing()) traceSample = null;
+        trace.dataUrl = null;
+        trace.image = null;
         if (hadImage) markDirty();
-        syncTraceControls();
-        render();
+        if (showing()) {
+          syncTraceControls();
+          render();
+        }
         resolve();
         return;
       }
       const image = new Image();
       image.onload = () => {
-        traceSample = null;
-        state.trace.image = image;
-        state.trace.dataUrl = dataUrl;
+        if (showing()) traceSample = null;
+        trace.image = image;
+        trace.dataUrl = dataUrl;
         if (fitImage) {
-          state.trace.scale = window.TraceScale.fitScale(state.width, state.height, image.width, image.height);
-          state.trace.x = 0;
-          state.trace.y = 0;
-          state.trace.visible = true;
-          state.trace.opacity = state.trace.opacity || 0.45;
+          trace.scale = window.TraceScale.fitScale(state.width, state.height, image.width, image.height);
+          trace.x = 0;
+          trace.y = 0;
+          trace.visible = true;
+          trace.opacity = trace.opacity || 0.45;
           markDirty();
         }
-        syncTraceControls();
-        render();
+        if (showing()) {
+          syncTraceControls();
+          render();
+        }
         resolve();
       };
       image.onerror = () => resolve();
       image.src = dataUrl;
     });
+  }
+
+  function loadTrace(dataUrl, fitImage) {
+    syncTraceCount();
+    return loadTraceInto(state.trace, dataUrl, fitImage);
   }
 
   function traceFit() {
@@ -1089,7 +1141,7 @@ function paintPreview() {
   }
 
   function setTracePercent(pct, source) {
-    if (!state.trace.move) return;
+    if (!state.traceMove) return;
     const clamped = Math.min(window.TraceScale.MAX, Math.max(window.TraceScale.MIN, pct));
     state.trace.scale = traceFit() * (clamped / 100);
     markDirty();
@@ -1116,7 +1168,7 @@ function paintPreview() {
 
   function serialize() {
     return JSON.stringify({
-      version: 1,
+      version: 2,
       name: state.name,
       width: state.width,
       height: state.height,
@@ -1127,20 +1179,20 @@ function paintPreview() {
         visible: layer.visible,
         frames: layer.frames.map((frame) => bytesToB64(frame)),
       })),
-      trace: {
-        dataUrl: state.trace.dataUrl,
-        opacity: state.trace.opacity,
-        visible: state.trace.visible,
-        scale: state.trace.scale,
-        x: state.trace.x,
-        y: state.trace.y,
-      },
+      traces: state.traces.map((trace) => ({
+        dataUrl: trace.dataUrl,
+        opacity: trace.opacity,
+        visible: trace.visible,
+        scale: trace.scale,
+        x: trace.x,
+        y: trace.y,
+      })),
     });
   }
 
   async function openText(text, path) {
     const data = JSON.parse(text);
-    if (!data || data.version !== 1 || !Array.isArray(data.layers)) throw new Error("This file is not a sprite project.");
+    if (!data || (data.version !== 1 && data.version !== 2) || !Array.isArray(data.layers)) throw new Error("This file is not a sprite project.");
     state.width = data.width;
     state.height = data.height;
     state.name = data.name || "sprite";
@@ -1161,13 +1213,23 @@ function paintPreview() {
     $("doc-name").textContent = state.name;
     $("doc-name").classList.remove("dirty");
     $("fps").value = state.fps;
-    const trace = data.trace || {};
-    state.trace.opacity = trace.opacity == null ? 0.45 : trace.opacity;
-    state.trace.visible = trace.visible !== false;
-    state.trace.scale = trace.scale || 1;
-    state.trace.x = trace.x || 0;
-    state.trace.y = trace.y || 0;
-    await loadTrace(trace.dataUrl || null, false);
+    const count = state.layers[0].frames.length;
+    const records = Array.isArray(data.traces)
+      ? data.traces.slice(0, count)
+      : Array.from({ length: count }, () => data.trace || {});
+    while (records.length < count) records.push({});
+    state.traces = records.map((trace) => ({
+      dataUrl: trace.dataUrl || null,
+      image: null,
+      opacity: trace.opacity == null ? 0.45 : trace.opacity,
+      visible: trace.visible !== false,
+      scale: trace.scale == null ? 1 : trace.scale,
+      x: trace.x || 0,
+      y: trace.y || 0,
+    }));
+    state.frame = 0;
+    state.trace = state.traces[0];
+    await Promise.all(state.traces.map((trace) => (trace.dataUrl ? loadTraceInto(trace, trace.dataUrl, false) : null)));
     buildLayers();
     buildFrames();
     buildPalette();
@@ -1365,8 +1427,16 @@ function paintPreview() {
   }
 
   function onKey(evt) {
-    const typing = evt.target.matches("input, textarea");
+    const typing = evt.target && evt.target.matches && evt.target.matches("input, textarea");
     if (typing) return;
+    if (evt.key === " " && !evt.ctrlKey && !evt.metaKey) {
+      evt.preventDefault();
+      if (!evt.repeat) {
+        hand = true;
+        paintChrome();
+      }
+      return;
+    }
     const key = evt.key.toLowerCase();
     const ctrl = evt.ctrlKey || evt.metaKey;
     if (ctrl && key === "z" && !evt.shiftKey) {
@@ -1457,11 +1527,6 @@ function paintPreview() {
     }
     const tools = { p: "pen", v: "mirror", b: "bucket", a: "magic", e: "eraser", l: "line", r: "rect", c: "ellipse", m: "move", u: "lighten", t: "dither", o: "picker", s: "select" };
     if (!ctrl && !evt.altKey && tools[key]) setTool(tools[key]);
-    if (key === " " && !ctrl) {
-      evt.preventDefault();
-      state.playing = !state.playing;
-      paintChrome();
-    }
   }
 
   function bind() {
@@ -1483,8 +1548,17 @@ function paintPreview() {
       zoomAt(evt.clientX, evt.clientY, state.zoom + (evt.deltaY < 0 ? step : -step));
     }, { passive: false });
     window.addEventListener("keydown", onKey);
+    window.addEventListener("keyup", (evt) => {
+      if (evt.key !== " ") return;
+      hand = false;
+      paintChrome();
+    });
+    window.addEventListener("blur", () => {
+      hand = false;
+      paintChrome();
+    });
     window.addEventListener("resize", () => {
-      fit();
+      clampPan();
       render();
     });
     new ResizeObserver(() => {
@@ -1545,24 +1619,38 @@ function paintPreview() {
     $("zoom-fit").addEventListener("click", () => { fit(); render(); });
     $("frame-add").addEventListener("click", () => {
       pushUndo();
+      syncTraceCount();
       state.layers.forEach((layer) => layer.frames.splice(state.frame + 1, 0, blank()));
+      state.traces.splice(state.frame + 1, 0, blankTrace());
       state.frame += 1;
+      state.trace = state.traces[state.frame];
+      traceSample = null;
       buildFrames();
+      syncTraceControls();
       render();
     });
     $("frame-dup").addEventListener("click", () => {
       pushUndo();
+      syncTraceCount();
       state.layers.forEach((layer) => layer.frames.splice(state.frame + 1, 0, P.clone(layer.frames[state.frame])));
+      state.traces.splice(state.frame + 1, 0, copyTrace(state.trace));
       state.frame += 1;
+      state.trace = state.traces[state.frame];
       buildFrames();
+      syncTraceControls();
       render();
     });
     $("frame-del").addEventListener("click", () => {
       if (frameCount() === 1) return;
       pushUndo();
+      syncTraceCount();
       state.layers.forEach((layer) => layer.frames.splice(state.frame, 1));
+      state.traces.splice(state.frame, 1);
       state.frame = Math.min(state.frame, frameCount() - 1);
+      state.trace = state.traces[state.frame];
+      traceSample = null;
       buildFrames();
+      syncTraceControls();
       render();
     });
     $("frame-left").addEventListener("click", () => moveFrame(-1));
@@ -1623,7 +1711,7 @@ function paintPreview() {
       setTracePercent(pct, "number");
     });
     $("trace-move").addEventListener("click", () => {
-      state.trace.move = !state.trace.move;
+      state.traceMove = !state.traceMove;
       paintChrome();
     });
     $("trace-visible").addEventListener("click", () => {
@@ -1676,11 +1764,16 @@ function paintPreview() {
     const next = state.frame + dir;
     if (next < 0 || next >= frameCount()) return;
     pushUndo();
+    syncTraceCount();
     state.layers.forEach((layer) => {
       const [frame] = layer.frames.splice(state.frame, 1);
       layer.frames.splice(next, 0, frame);
     });
+    const [trace] = state.traces.splice(state.frame, 1);
+    state.traces.splice(next, 0, trace);
     state.frame = next;
+    state.trace = state.traces[state.frame];
+    syncTraceControls();
     buildFrames();
     render();
   }
@@ -1721,6 +1814,17 @@ function paintPreview() {
         bubbles: true,
       }));
     };
+    fit();
+    const parked = state.panX;
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true }));
+    if (!hand) throw new Error("space did not arm canvas move");
+    canvas.dispatchEvent(new PointerEvent("pointerdown", { clientX: rect.left + 80, clientY: rect.top + 80, button: 0, buttons: 1, pointerId: 3, bubbles: true }));
+    canvas.dispatchEvent(new PointerEvent("pointermove", { clientX: rect.left + 200, clientY: rect.top + 80, button: 0, buttons: 1, pointerId: 3, bubbles: true }));
+    canvas.dispatchEvent(new PointerEvent("pointerup", { clientX: rect.left + 200, clientY: rect.top + 80, button: 0, buttons: 0, pointerId: 3, bubbles: true }));
+    document.body.dispatchEvent(new KeyboardEvent("keyup", { key: " ", bubbles: true }));
+    if (hand) throw new Error("space stayed held");
+    if (Math.abs(state.panX - parked) < 40) throw new Error("space drag left the canvas at " + state.panX);
+    fit();
     setTool("pen");
     state.primary = [0, 200, 40, 255];
     fire("pointerdown", 2, 2);
@@ -1778,17 +1882,17 @@ function paintPreview() {
     wide.getContext("2d").fillRect(0, 0, 20, 20);
     await loadTrace(wide.toDataURL("image/png"), true);
     const fitted = state.trace.scale;
-    state.trace.move = false;
+    state.traceMove = false;
     paintChrome();
     if (!$("trace-scale").disabled) throw new Error("scale unlocked while move trace is off");
     $("trace-scale").value = "0";
     $("trace-scale").dispatchEvent(new Event("input", { bubbles: true }));
     if (state.trace.scale !== fitted) throw new Error("locked scale changed");
-    state.trace.move = true;
+    state.traceMove = true;
     paintChrome();
     $("trace-scale").dispatchEvent(new Event("input", { bubbles: true }));
     if (!(state.trace.scale < fitted / 100)) throw new Error("trace scale min is still " + state.trace.scale + ", fit was " + fitted);
-    state.trace.move = false;
+    state.traceMove = false;
     paintChrome();
     const swatch = document.createElement("canvas");
     swatch.width = 32;
@@ -1804,6 +1908,22 @@ function paintPreview() {
     if (state.primary[0] > 40 || state.primary[1] < 150 || state.primary[2] > 80) {
       throw new Error("trace sample missed " + state.primary.join(","));
     }
+    const keptFrame = state.frame;
+    const keptTrace = state.trace.dataUrl;
+    $("frame-add").click();
+    if (state.trace.dataUrl) throw new Error("added frame reused the previous trace");
+    if (state.traces[keptFrame].dataUrl !== keptTrace) throw new Error("the other frame lost its trace");
+    const other = document.createElement("canvas");
+    other.width = 8;
+    other.height = 8;
+    const og = other.getContext("2d");
+    og.fillStyle = "rgb(20, 40, 200)";
+    og.fillRect(0, 0, 8, 8);
+    await loadTrace(other.toDataURL("image/png"), true);
+    if (!state.trace.dataUrl || state.trace.dataUrl === state.traces[keptFrame].dataUrl) throw new Error("frames still share one trace");
+    state.frame = 0;
+    syncTraceCount();
+    traceSample = null;
     await loadTrace(c.toDataURL("image/png"), true);
     state.trace.opacity = 0.55;
     const exported = P.composite(state.layers, 0, state.width, state.height, false, 0);
