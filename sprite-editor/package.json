@@ -1,0 +1,14 @@
+{
+  "name": "sprite-editor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A standalone pixel sprite editor. Chromium, via Electron.",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node test/pixels.test.js"
+  },
+  "dependencies": {
+    "electron": "33.4.11"
+  }
+}
