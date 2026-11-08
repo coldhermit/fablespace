@@ -4,14 +4,10 @@ A creation kit, built one tool at a time. The first tool is a pixel sprite edito
 
 ## Sprite editor
 
-A standalone Chromium app for drawing sprites: pens, shapes, layers, frames, onion skin, and PNG, spritesheet, and GIF export. You can also lay a semi-transparent picture over the canvas and trace it. The tracing picture is saved in the project and left out of exports.
+A Chromium desktop app for drawing sprites: pens, shapes, layers, frames, onion skin, and PNG, spritesheet, and GIF export. A tracing picture can sit over the canvas. 100% scale fits that picture inside the sprite, and the scale control goes far enough below that to shrink a large reference. The tracing picture is saved in the project and left out of exports.
 
-From this folder on Windows, double-click `start.bat`. On Linux or macOS:
+On Windows, download the zip from the [latest release](https://github.com/coldhermit/fablespace/releases), unzip it, and run `SpriteEditor.exe`. That is the app itself. Closing the window quits it. If the drawing has unsaved changes, it asks first.
 
-```sh
-./start.sh
-```
-
-The first launch installs the editor's dependencies, which include Chromium. After that, the script just opens the editor.
+From a checkout, `start.bat` opens that exe. The first time, if the exe is not there yet, the script builds it and then opens it.
 
 Projects save as `.sprite.json`.

@@ -26,6 +26,44 @@ function createWindow() {
   });
   win.setMenuBarVisibility(false);
   win.loadFile(path.join(__dirname, "..", "editor", "index.html"));
+  let closing = false;
+  win.on("close", async (event) => {
+    if (closing || process.env.SPRITE_SMOKE) return;
+    event.preventDefault();
+    let dirty = false;
+    try {
+      dirty = await win.webContents.executeJavaScript("Boolean(window.__editor && window.__editor.isDirty())");
+    } catch (err) {
+      dirty = false;
+    }
+    if (dirty) {
+      const choice = await dialog.showMessageBox(win, {
+        type: "question",
+        buttons: ["Save", "Don't save", "Cancel"],
+        defaultId: 0,
+        cancelId: 2,
+        noLink: true,
+        message: "Save this sprite before closing?",
+      });
+      if (choice.response === 2) return;
+      if (choice.response === 0) {
+        let saved = null;
+        try {
+          saved = await win.webContents.executeJavaScript("window.__editor.saveProject()");
+        } catch (err) {
+          saved = null;
+        }
+        if (!saved) return;
+      }
+    }
+    closing = true;
+    win.close();
+  });
+  if (process.env.SPRITE_CLOSE_TEST) {
+    win.webContents.on("did-finish-load", () => {
+      setTimeout(() => win.close(), 200);
+    });
+  }
   return win;
 }
 

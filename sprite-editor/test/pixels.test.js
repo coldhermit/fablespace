@@ -1,6 +1,7 @@
 const assert = require("assert");
 const P = require("../editor/pixels");
 const Gif = require("../editor/gif");
+const TraceScale = require("../editor/trace-scale");
 
 function colorAt(data, x, y, w) {
   return P.get(data, x, y, w).join(",");
@@ -195,6 +196,16 @@ function lzwDecode(data, minCodeSize, count) {
   assert.deepStrictEqual(decoded.frames[0][2], [0, 0, 0, 0]);
   assert.deepStrictEqual(decoded.frames[0][3], [10, 20, 200, 255]);
   assert.deepStrictEqual(decoded.frames[1][0], [10, 180, 20, 255]);
+}
+
+{
+  const fit = TraceScale.fitScale(32, 32, 2000, 1200);
+  assert.ok(Math.abs(fit - 32 / 2000) < 1e-9);
+  const smallest = fit * (TraceScale.percentFromSlider(0) / 100);
+  assert.ok(smallest < fit / 100, "smallest scale should be under 1% of the fitted size");
+  const back = TraceScale.percentFromSlider(TraceScale.sliderFromPercent(100));
+  assert.ok(Math.abs(back - 100) < 1.5);
+  assert.ok(TraceScale.percentFromSlider(0) <= TraceScale.MIN);
 }
 
 console.log("pixel and gif tests passed");

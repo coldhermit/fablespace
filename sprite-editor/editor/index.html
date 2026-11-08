@@ -131,13 +131,14 @@
       </section>
       <section>
         <header class="side-h"><span>Trace</span></header>
-        <p class="hint">A reference picture drawn over the sprite. It is saved with the project and left out of exports.</p>
+        <p class="hint">A reference picture drawn over the sprite. 100% fits the whole picture inside the sprite. It is saved with the project and left out of exports.</p>
         <div class="row">
           <button type="button" id="trace-pick">Choose image</button>
           <button type="button" id="trace-clear">Clear</button>
         </div>
         <label class="slider">Opacity <input id="trace-opacity" type="range" min="0" max="100" value="45"></label>
-        <label class="slider">Scale <input id="trace-scale" type="range" min="10" max="800" value="100"></label>
+        <label class="slider">Scale <input id="trace-scale" type="range" min="0" max="1000" value="785" title="100% fits the picture inside the sprite. Drag left to make it smaller."></label>
+        <label class="slider"><input id="trace-scale-num" type="number" min="0.05" max="800" step="0.1" value="100"> %</label>
         <div class="row">
           <button type="button" id="trace-move" title="Drag on the canvas to move the tracing image">Move trace</button>
           <button type="button" id="trace-visible" class="on">Visible</button>
@@ -210,6 +211,7 @@
   <input id="file-trace" type="file" accept="image/*" hidden>
 
   <script src="pixels.js"></script>
+  <script src="trace-scale.js"></script>
   <script src="gif.js"></script>
   <script src="editor.js"></script>
 </body>

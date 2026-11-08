@@ -1,14 +1,39 @@
 {
   "name": "sprite-editor",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "A standalone pixel sprite editor. Chromium, via Electron.",
+  "author": "Fablespace",
+  "description": "A standalone pixel sprite editor.",
   "main": "electron/main.js",
   "scripts": {
     "start": "electron .",
+    "pack": "electron-builder --win zip dir --x64",
     "test": "node test/pixels.test.js"
   },
-  "dependencies": {
-    "electron": "33.4.11"
+  "devDependencies": {
+    "electron": "33.4.11",
+    "electron-builder": "25.1.8"
+  },
+  "build": {
+    "appId": "dev.fablespace.sprite-editor",
+    "productName": "Sprite Editor",
+    "asar": true,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "electron/**/*",
+      "editor/**/*",
+      "package.json"
+    ],
+    "win": {
+      "signAndEditExecutable": false,
+      "executableName": "SpriteEditor",
+      "target": [
+        { "target": "dir", "arch": ["x64"] },
+        { "target": "zip", "arch": ["x64"] }
+      ],
+      "artifactName": "SpriteEditor-${version}-win.${ext}"
+    }
   }
 }

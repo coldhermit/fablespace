@@ -997,8 +997,12 @@ function paintPreview() {
   function loadTrace(dataUrl, fitImage) {
     return new Promise((resolve) => {
       if (!dataUrl) {
+        const hadImage = Boolean(state.trace.dataUrl);
         state.trace.dataUrl = null;
         state.trace.image = null;
+        if (hadImage) markDirty();
+        syncTraceControls();
+        render();
         resolve();
         return;
       }
@@ -1007,11 +1011,12 @@ function paintPreview() {
         state.trace.image = image;
         state.trace.dataUrl = dataUrl;
         if (fitImage) {
-          state.trace.scale = state.width / image.width;
+          state.trace.scale = window.TraceScale.fitScale(state.width, state.height, image.width, image.height);
           state.trace.x = 0;
           state.trace.y = 0;
           state.trace.visible = true;
           state.trace.opacity = state.trace.opacity || 0.45;
+          markDirty();
         }
         syncTraceControls();
         render();
@@ -1022,10 +1027,27 @@ function paintPreview() {
     });
   }
 
+  function traceFit() {
+    const image = state.trace.image;
+    if (!image) return 1;
+    return window.TraceScale.fitScale(state.width, state.height, image.width, image.height);
+  }
+
   function syncTraceControls() {
     $("trace-opacity").value = String(Math.round(state.trace.opacity * 100));
-    $("trace-scale").value = String(Math.round(state.trace.scale * 100));
+    const pct = (state.trace.scale / traceFit()) * 100;
+    $("trace-scale").value = String(window.TraceScale.sliderFromPercent(pct));
+    $("trace-scale-num").value = String(Math.round(pct * 10) / 10);
     paintChrome();
+  }
+
+  function setTracePercent(pct, source) {
+    const clamped = Math.min(window.TraceScale.MAX, Math.max(window.TraceScale.MIN, pct));
+    state.trace.scale = traceFit() * (clamped / 100);
+    markDirty();
+    if (source !== "slider") $("trace-scale").value = String(window.TraceScale.sliderFromPercent(clamped));
+    if (source !== "number") $("trace-scale-num").value = String(Math.round(clamped * 10) / 10);
+    render();
   }
 
   function bytesToB64(bytes) {
@@ -1117,7 +1139,7 @@ function paintPreview() {
     const suggested = state.name + ".sprite.json";
     if (window.desk) {
       const saved = await window.desk.saveProject(state.path || suggested, data);
-      if (!saved) return;
+      if (!saved) return null;
       state.path = saved;
       state.name = saved.split(/[\\/]/).pop().replace(/\.sprite\.json$/i, "").replace(/\.json$/i, "");
     } else {
@@ -1127,6 +1149,7 @@ function paintPreview() {
     $("doc-name").textContent = state.name;
     $("doc-name").classList.remove("dirty");
     $("st-msg").textContent = "Saved";
+    return state.path || suggested;
   }
 
   async function openProject() {
@@ -1544,8 +1567,12 @@ function paintPreview() {
       render();
     });
     $("trace-scale").addEventListener("input", () => {
-      state.trace.scale = Number($("trace-scale").value) / 100;
-      render();
+      setTracePercent(window.TraceScale.percentFromSlider($("trace-scale").value), "slider");
+    });
+    $("trace-scale-num").addEventListener("change", () => {
+      const pct = Number($("trace-scale-num").value);
+      if (!pct) return;
+      setTracePercent(pct, "number");
     });
     $("trace-move").addEventListener("click", () => {
       state.trace.move = !state.trace.move;
@@ -1585,11 +1612,6 @@ function paintPreview() {
       if (!file) return;
       if (file.name.endsWith(".json")) await openText(await file.text(), null);
       else await loadTrace(await readFile(file), true);
-    });
-    window.addEventListener("beforeunload", (evt) => {
-      if (!state.dirty) return;
-      evt.preventDefault();
-      evt.returnValue = "";
     });
     requestAnimationFrame(function loop() {
       const now = performance.now();
@@ -1702,6 +1724,17 @@ function paintPreview() {
     await loadTrace(c.toDataURL("image/png"), true);
     state.trace.opacity = 0.55;
     if (!state.trace.image) throw new Error("trace image did not load");
+    const wide = document.createElement("canvas");
+    wide.width = 2000;
+    wide.height = 400;
+    wide.getContext("2d").fillRect(0, 0, 20, 20);
+    await loadTrace(wide.toDataURL("image/png"), true);
+    const fitted = state.trace.scale;
+    $("trace-scale").value = "0";
+    $("trace-scale").dispatchEvent(new Event("input", { bubbles: true }));
+    if (!(state.trace.scale < fitted / 100)) throw new Error("trace scale min is still " + state.trace.scale + ", fit was " + fitted);
+    await loadTrace(c.toDataURL("image/png"), true);
+    state.trace.opacity = 0.55;
     const exported = P.composite(state.layers, 0, state.width, state.height, false, 0);
     if (exported[3] !== 0) throw new Error("trace leaked into the export");
     const gifFrame = new Uint8ClampedArray(4 * 4 * 4);
@@ -1723,6 +1756,10 @@ function paintPreview() {
 
   window.__editor = {
     state,
+    isDirty() {
+      return state.dirty;
+    },
+    saveProject,
     setTool,
     stamp(x, y, color, size) {
       P.stamp(currentBuffer(), state.width, state.height, x, y, size || 1, color);
