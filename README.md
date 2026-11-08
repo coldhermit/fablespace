@@ -4,7 +4,7 @@ A creation kit, built one tool at a time. The first tool is a pixel sprite edito
 
 ## Sprite editor
 
-A Chromium desktop app for drawing sprites: pens, shapes, layers, frames, onion skin, and PNG, spritesheet, and GIF export. A tracing picture can sit over the canvas. 100% scale fits that picture inside the sprite, and the scale control goes far enough below that to shrink a large reference. The tracing picture is saved in the project and left out of exports.
+A Chromium desktop app for drawing sprites: pens, shapes, layers, frames, onion skin, and PNG, spritesheet, and GIF export. A tracing picture can sit over the canvas. The eyedropper reads that picture's own color. 100% scale fits it inside the sprite, and Move trace unlocks both dragging and scaling. The tracing picture is saved in the project and left out of exports.
 
 On Windows, download the zip from the [latest release](https://github.com/coldhermit/fablespace/releases), unzip it, and run `SpriteEditor.exe`. That is the app itself. Closing the window quits it. If the drawing has unsaved changes, it asks first.
 

@@ -62,7 +62,7 @@
       <button type="button" data-tool="dither" title="Dither (T). Right click swaps the two colors.">
         <svg viewBox="0 0 24 24"><path d="M5 5h4v4H5zM15 5h4v4h-4zM10 10h4v4h-4zM5 15h4v4H5zM15 15h4v4h-4z"/></svg>
       </button>
-      <button type="button" data-tool="picker" title="Color picker (O). Alt+click picks from any tool.">
+      <button type="button" data-tool="picker" title="Color picker (O). Samples the tracing picture's own color where it covers the cursor. Shift+click samples the sprite. Alt+click picks from any tool.">
         <svg viewBox="0 0 24 24"><path d="M14 5l5 5-8 8H6v-5z"/><path d="M13 6l2-2 5 5-2 2"/></svg>
       </button>
       <button type="button" data-tool="select" title="Select (S). Drag inside to move. Esc stamps it down.">
@@ -140,7 +140,7 @@
         <label class="slider">Scale <input id="trace-scale" type="range" min="0" max="1000" value="785" title="100% fits the picture inside the sprite. Drag left to make it smaller."></label>
         <label class="slider"><input id="trace-scale-num" type="number" min="0.05" max="800" step="0.1" value="100"> %</label>
         <div class="row">
-          <button type="button" id="trace-move" title="Drag on the canvas to move the tracing image">Move trace</button>
+          <button type="button" id="trace-move" title="Drag the reference to move it. This also unlocks the scale.">Move trace</button>
           <button type="button" id="trace-visible" class="on">Visible</button>
         </div>
         <label class="check"><input id="trace-show" type="checkbox" checked hidden></label>
@@ -196,7 +196,7 @@
         <p><b>P</b> pen · <b>V</b> mirror · <b>B</b> bucket · <b>A</b> replace color · <b>E</b> eraser</p>
         <p><b>L</b> line · <b>R</b> rectangle · <b>C</b> ellipse · <b>M</b> move · <b>U</b> lighten · <b>T</b> dither · <b>O</b> pick · <b>S</b> select</p>
         <p>Left click draws the primary color. Right click draws the secondary. A transparent color erases.</p>
-        <p><b>[ ]</b> pen size · <b>X</b> swap colors · <b>Alt+click</b> pick a color · <b>Alt+G</b> grid · <b>Alt+L</b> layer preview</p>
+        <p><b>[ ]</b> pen size · <b>X</b> swap colors · <b>Alt+click</b> picks a color · <b>Shift</b> with the picker samples the sprite instead of the trace · <b>Alt+G</b> grid · <b>Alt+L</b> layer preview</p>
         <p><b>+</b> <b>−</b> zoom · <b>0</b> fit · wheel zooms at the cursor · middle-drag pans · <b>Shift+arrows</b> pans one pixel</p>
         <p><b>Ctrl+Z</b> undo · <b>Ctrl+Y</b> redo · <b>Ctrl+S</b> save · <b>Ctrl+O</b> open · <b>Ctrl+C/X/V</b> copy, cut, paste a selection</p>
         <p>Arrows nudge a selection. Delete clears it. Escape stamps a floating selection back down.</p>

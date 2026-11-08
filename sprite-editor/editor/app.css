@@ -154,6 +154,7 @@ header { overflow-x: auto; }
 .chip { width: 22px; height: 22px; padding: 0; border-radius: 3px; }
 #preview { width: 96px; height: 96px; background: #101010; image-rendering: pixelated; align-self: center; border: 1px solid var(--line); }
 #fps, #trace-scale-num { width: 72px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 4px; padding: 3px 6px; }
+#trace-scale:disabled, #trace-scale-num:disabled { opacity: 0.4; }
 
 footer {
   display: flex;

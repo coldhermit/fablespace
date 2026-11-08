@@ -430,19 +430,58 @@ function deleteSelection() {
     render();
   }
 
-  function pickColor(x, y, button) {
-    if (x < 0 || y < 0 || x >= state.width || y >= state.height) return;
-    const color = P.get(P.composite(state.layers, state.frame, state.width, state.height, false, state.layer), x, y, state.width);
+  let traceSample = null;
+
+  function tracePixels() {
+    const image = state.trace.image;
+    if (!image) return null;
+    if (traceSample && traceSample.image === image) return traceSample.data;
+    const sample = document.createElement("canvas");
+    sample.width = image.width;
+    sample.height = image.height;
+    const context = sample.getContext("2d", { willReadFrequently: true });
+    context.drawImage(image, 0, 0);
+    const data = context.getImageData(0, 0, sample.width, sample.height).data;
+    traceSample = { image, data };
+    return data;
+  }
+
+  function traceColorAt(spriteX, spriteY) {
+    const image = state.trace.image;
+    if (!state.trace.visible || state.trace.opacity <= 0 || !image || !state.trace.scale) return null;
+    const px = Math.floor((spriteX - state.trace.x) / state.trace.scale);
+    const py = Math.floor((spriteY - state.trace.y) / state.trace.scale);
+    if (px < 0 || py < 0 || px >= image.width || py >= image.height) return null;
+    const data = tracePixels();
+    const i = (py * image.width + px) * 4;
+    if (!data || data[i + 3] === 0) return null;
+    return [data[i], data[i + 1], data[i + 2], 255];
+  }
+
+  function pickColor(x, y, button, exact) {
+    const fromTrace = exact && !exact.spriteOnly ? traceColorAt(exact.x, exact.y) : null;
+    let color = fromTrace;
+    if (!color) {
+      if (x < 0 || y < 0 || x >= state.width || y >= state.height) return;
+      color = P.get(P.composite(state.layers, state.frame, state.width, state.height, false, state.layer), x, y, state.width);
+    }
     if (button === 2) state.secondary = color;
     else state.primary = color;
+    $("st-msg").textContent = fromTrace ? "Sampled the trace" : "Sampled the sprite";
     paintSwatches();
   }
 
-  function cellFromEvent(evt) {
+  function spritePointFromEvent(evt) {
     const rect = canvas.getBoundingClientRect();
-    const x = Math.floor((evt.clientX - rect.left - state.panX) / state.zoom);
-    const y = Math.floor((evt.clientY - rect.top - state.panY) / state.zoom);
-    return [x, y];
+    return [
+      (evt.clientX - rect.left - state.panX) / state.zoom,
+      (evt.clientY - rect.top - state.panY) / state.zoom,
+    ];
+  }
+
+  function cellFromEvent(evt) {
+    const [x, y] = spritePointFromEvent(evt);
+    return [Math.floor(x), Math.floor(y)];
   }
 
   function inside(x, y) {
@@ -459,7 +498,8 @@ function deleteSelection() {
     const [x, y] = cellFromEvent(evt);
     hover = [x, y];
     if ((evt.altKey && state.tool !== "move") || state.tool === "picker") {
-      pickColor(x, y, evt.button);
+      const point = spritePointFromEvent(evt);
+      pickColor(x, y, evt.button, { x: point[0], y: point[1], spriteOnly: evt.shiftKey });
       return;
     }
     if (state.trace.move) {
@@ -813,10 +853,15 @@ function paintPreview() {
     $("btn-dim").classList.toggle("on", state.dim);
     $("trace-move").classList.toggle("on", state.trace.move);
     $("trace-visible").classList.toggle("on", state.trace.visible);
+    $("trace-scale").disabled = !state.trace.move;
+    $("trace-scale-num").disabled = !state.trace.move;
+    $("trace-scale").title = state.trace.move
+      ? "100% fits the picture inside the sprite. Drag left to make it smaller."
+      : "Turn on Move trace to change the size.";
     $("btn-play").textContent = state.playing ? "Pause" : "Play";
     $("btn-play").classList.toggle("on", state.playing);
     paintSwatches();
-    view.style.cursor = state.trace.move ? "move" : state.tool === "move" || state.tool === "select" ? "default" : "crosshair";
+    view.style.cursor = state.tool === "picker" ? "crosshair" : state.trace.move ? "move" : state.tool === "move" || state.tool === "select" ? "default" : "crosshair";
   }
 
   function setTool(name) {
@@ -998,6 +1043,7 @@ function paintPreview() {
     return new Promise((resolve) => {
       if (!dataUrl) {
         const hadImage = Boolean(state.trace.dataUrl);
+        traceSample = null;
         state.trace.dataUrl = null;
         state.trace.image = null;
         if (hadImage) markDirty();
@@ -1008,6 +1054,7 @@ function paintPreview() {
       }
       const image = new Image();
       image.onload = () => {
+        traceSample = null;
         state.trace.image = image;
         state.trace.dataUrl = dataUrl;
         if (fitImage) {
@@ -1042,6 +1089,7 @@ function paintPreview() {
   }
 
   function setTracePercent(pct, source) {
+    if (!state.trace.move) return;
     const clamped = Math.min(window.TraceScale.MAX, Math.max(window.TraceScale.MIN, pct));
     state.trace.scale = traceFit() * (clamped / 100);
     markDirty();
@@ -1730,9 +1778,32 @@ function paintPreview() {
     wide.getContext("2d").fillRect(0, 0, 20, 20);
     await loadTrace(wide.toDataURL("image/png"), true);
     const fitted = state.trace.scale;
+    state.trace.move = false;
+    paintChrome();
+    if (!$("trace-scale").disabled) throw new Error("scale unlocked while move trace is off");
     $("trace-scale").value = "0";
     $("trace-scale").dispatchEvent(new Event("input", { bubbles: true }));
+    if (state.trace.scale !== fitted) throw new Error("locked scale changed");
+    state.trace.move = true;
+    paintChrome();
+    $("trace-scale").dispatchEvent(new Event("input", { bubbles: true }));
     if (!(state.trace.scale < fitted / 100)) throw new Error("trace scale min is still " + state.trace.scale + ", fit was " + fitted);
+    state.trace.move = false;
+    paintChrome();
+    const swatch = document.createElement("canvas");
+    swatch.width = 32;
+    swatch.height = 32;
+    const sg = swatch.getContext("2d");
+    sg.fillStyle = "rgb(10, 180, 40)";
+    sg.fillRect(0, 0, 32, 32);
+    await loadTrace(swatch.toDataURL("image/png"), true);
+    state.trace.opacity = 0.2;
+    setTool("picker");
+    state.primary = [0, 0, 0, 255];
+    fire("pointerdown", 4, 4);
+    if (state.primary[0] > 40 || state.primary[1] < 150 || state.primary[2] > 80) {
+      throw new Error("trace sample missed " + state.primary.join(","));
+    }
     await loadTrace(c.toDataURL("image/png"), true);
     state.trace.opacity = 0.55;
     const exported = P.composite(state.layers, 0, state.width, state.height, false, 0);
