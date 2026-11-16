@@ -1,0 +1,767 @@
+{
+  "system": {
+    "game_title": "Fable Hollow",
+    "currency": "G",
+    "start_map_id": 1,
+    "start_x": 3,
+    "start_y": 12,
+    "start_dir": "up",
+    "party": [
+      1
+    ],
+    "start_gold": 20,
+    "start_items": [
+      {
+        "id": 1,
+        "count": 1
+      }
+    ],
+    "start_weapons": [
+      {
+        "id": 2,
+        "count": 1
+      }
+    ],
+    "start_armors": [
+      {
+        "id": 2,
+        "count": 1
+      }
+    ],
+    "title_image": "title",
+    "terms": {
+      "hp": "HP",
+      "mp": "MP",
+      "level": "Level",
+      "attack": "Attack",
+      "guard": "Guard",
+      "item": "Item",
+      "skill": "Skill",
+      "equip": "Equip",
+      "status": "Status",
+      "save": "Save",
+      "game_end": "End Game",
+      "new_game": "New Game",
+      "continue_game": "Continue",
+      "shutdown": "Exit",
+      "fight": "Fight",
+      "escape": "Escape",
+      "to_title": "To Title",
+      "gold": "Gold"
+    }
+  },
+  "actors": [
+    {
+      "id": 0,
+      "name": "",
+      "nickname": "",
+      "class_id": 1,
+      "initial_level": 1,
+      "max_level": 99,
+      "profile": "",
+      "face": "",
+      "character": "",
+      "character_index": 0,
+      "weapon_id": 0,
+      "shield_id": 0,
+      "head_id": 0,
+      "body_id": 0,
+      "accessory_id": 0,
+      "note": ""
+    },
+    {
+      "id": 1,
+      "name": "Lark",
+      "nickname": "Wayfarer",
+      "class_id": 1,
+      "initial_level": 1,
+      "max_level": 20,
+      "profile": "A traveler who keeps to the meadow paths.",
+      "face": "lark",
+      "character": "hero",
+      "character_index": 0,
+      "weapon_id": 1,
+      "shield_id": 0,
+      "head_id": 0,
+      "body_id": 1,
+      "accessory_id": 0,
+      "note": ""
+    }
+  ],
+  "classes": [
+    {
+      "id": 0,
+      "name": "",
+      "exp": {
+        "basis": 20,
+        "extra": 10,
+        "accel": 5
+      },
+      "params": [
+        {
+          "base": 10,
+          "plus": 1
+        },
+        {
+          "base": 10,
+          "plus": 1
+        },
+        {
+          "base": 10,
+          "plus": 1
+        },
+        {
+          "base": 10,
+          "plus": 1
+        },
+        {
+          "base": 10,
+          "plus": 1
+        },
+        {
+          "base": 10,
+          "plus": 1
+        },
+        {
+          "base": 10,
+          "plus": 1
+        },
+        {
+          "base": 10,
+          "plus": 1
+        }
+      ],
+      "learnings": [],
+      "note": ""
+    },
+    {
+      "id": 1,
+      "name": "Wayfarer",
+      "exp": {
+        "basis": 20,
+        "extra": 8,
+        "accel": 4
+      },
+      "params": [
+        {
+          "base": 48,
+          "plus": 8
+        },
+        {
+          "base": 16,
+          "plus": 2
+        },
+        {
+          "base": 5,
+          "plus": 1
+        },
+        {
+          "base": 5,
+          "plus": 1
+        },
+        {
+          "base": 7,
+          "plus": 1
+        },
+        {
+          "base": 5,
+          "plus": 1
+        },
+        {
+          "base": 7,
+          "plus": 1
+        },
+        {
+          "base": 4,
+          "plus": 0
+        }
+      ],
+      "learnings": [
+        {
+          "level": 1,
+          "skill_id": 1
+        },
+        {
+          "level": 1,
+          "skill_id": 2
+        }
+      ],
+      "note": ""
+    }
+  ],
+  "skills": [
+    {
+      "id": 0,
+      "name": "",
+      "description": "",
+      "mp_cost": 0,
+      "occasion": "always",
+      "scope": "none",
+      "hit": 100,
+      "damage": {
+        "kind": "none",
+        "element": "physical",
+        "power": 0,
+        "variance": 20
+      },
+      "effects": [],
+      "note": ""
+    },
+    {
+      "id": 1,
+      "name": "Mend",
+      "description": "Close a cut with a warm light.",
+      "mp_cost": 5,
+      "occasion": "always",
+      "scope": "one_ally",
+      "hit": 100,
+      "damage": {
+        "kind": "hp_recover",
+        "element": "magical",
+        "power": 18,
+        "variance": 0
+      },
+      "effects": [],
+      "note": ""
+    },
+    {
+      "id": 2,
+      "name": "Spark",
+      "description": "A crack of static.",
+      "mp_cost": 6,
+      "occasion": "battle",
+      "scope": "one_enemy",
+      "hit": 95,
+      "damage": {
+        "kind": "hp_damage",
+        "element": "magical",
+        "power": 6,
+        "variance": 10
+      },
+      "effects": [],
+      "note": ""
+    },
+    {
+      "id": 3,
+      "name": "Ooze",
+      "description": "A slick that keeps burning.",
+      "mp_cost": 0,
+      "occasion": "battle",
+      "scope": "one_enemy",
+      "hit": 90,
+      "damage": {
+        "kind": "none",
+        "element": "magical",
+        "power": 0,
+        "variance": 0
+      },
+      "effects": [
+        {
+          "kind": "add_state",
+          "state_id": 2,
+          "chance": 100
+        }
+      ],
+      "note": ""
+    }
+  ],
+  "items": [
+    {
+      "id": 0,
+      "name": "",
+      "description": "",
+      "price": 0,
+      "consumable": true,
+      "occasion": "always",
+      "scope": "user",
+      "hit": 100,
+      "damage": {
+        "kind": "none",
+        "element": "physical",
+        "power": 0,
+        "variance": 20
+      },
+      "effects": [],
+      "note": ""
+    },
+    {
+      "id": 1,
+      "name": "Potion",
+      "description": "A corked vial of meadow tonic.",
+      "price": 25,
+      "consumable": true,
+      "occasion": "always",
+      "scope": "one_ally",
+      "hit": 100,
+      "damage": {
+        "kind": "none",
+        "element": "physical",
+        "power": 0,
+        "variance": 20
+      },
+      "effects": [
+        {
+          "kind": "recover_hp",
+          "percent": 0,
+          "flat": 30
+        }
+      ],
+      "note": ""
+    },
+    {
+      "id": 2,
+      "name": "Berry",
+      "description": "Tart, and better than nothing.",
+      "price": 8,
+      "consumable": true,
+      "occasion": "always",
+      "scope": "one_ally",
+      "hit": 100,
+      "damage": {
+        "kind": "none",
+        "element": "physical",
+        "power": 0,
+        "variance": 20
+      },
+      "effects": [
+        {
+          "kind": "recover_hp",
+          "percent": 0,
+          "flat": 15
+        }
+      ],
+      "note": ""
+    }
+  ],
+  "weapons": [
+    {
+      "id": 0,
+      "name": "",
+      "description": "",
+      "price": 0,
+      "params": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "note": ""
+    },
+    {
+      "id": 1,
+      "name": "Walking Stick",
+      "description": "A straight branch, sanded smooth.",
+      "price": 40,
+      "params": [
+        0,
+        0,
+        2,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "note": ""
+    },
+    {
+      "id": 2,
+      "name": "Thorn",
+      "description": "A short knife with a wrapped handle.",
+      "price": 30,
+      "params": [
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "note": ""
+    }
+  ],
+  "armors": [
+    {
+      "id": 0,
+      "name": "",
+      "description": "",
+      "price": 0,
+      "slot": "body",
+      "params": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "note": ""
+    },
+    {
+      "id": 1,
+      "name": "Cloth Shirt",
+      "description": "Mended at the elbows.",
+      "price": 30,
+      "slot": "body",
+      "params": [
+        0,
+        0,
+        0,
+        3,
+        0,
+        0,
+        0,
+        0
+      ],
+      "note": ""
+    },
+    {
+      "id": 2,
+      "name": "Leaf Cloak",
+      "description": "Woven to shed a light rain.",
+      "price": 20,
+      "slot": "body",
+      "params": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "note": ""
+    }
+  ],
+  "enemies": [
+    {
+      "id": 0,
+      "name": "",
+      "battler": "",
+      "params": [
+        10,
+        0,
+        5,
+        5,
+        5,
+        5,
+        5,
+        4
+      ],
+      "exp": 0,
+      "gold": 0,
+      "drops": [],
+      "actions": [],
+      "note": ""
+    },
+    {
+      "id": 1,
+      "name": "Meadow Slime",
+      "battler": "slime",
+      "params": [
+        40,
+        0,
+        8,
+        6,
+        2,
+        4,
+        5,
+        3
+      ],
+      "exp": 30,
+      "gold": 12,
+      "drops": [
+        {
+          "item_id": 2,
+          "denominator": 2
+        }
+      ],
+      "actions": [
+        {
+          "skill_id": 0,
+          "rating": 5,
+          "condition": {
+            "kind": "always"
+          }
+        },
+        {
+          "skill_id": 3,
+          "rating": 4,
+          "condition": {
+            "kind": "hp_below",
+            "percent": 50
+          }
+        }
+      ],
+      "note": ""
+    }
+  ],
+  "troops": [
+    {
+      "id": 0,
+      "name": "",
+      "members": [],
+      "pages": []
+    },
+    {
+      "id": 1,
+      "name": "A Meadow Slime",
+      "members": [
+        {
+          "enemy_id": 1,
+          "x": 220,
+          "y": 120
+        }
+      ],
+      "pages": [
+        {
+          "condition": {
+            "turn_start": 0,
+            "turn_every": 0,
+            "enemy_hp": null,
+            "switch_id": 0
+          },
+          "span": "battle",
+          "list": [
+            {
+              "code": "show_text",
+              "face": "",
+              "speaker": "",
+              "lines": [
+                "A meadow slime blocks the path."
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "states": [
+    {
+      "id": 0,
+      "name": "",
+      "restriction": "none",
+      "removal": "none",
+      "slip_hp_percent": 0,
+      "note": ""
+    },
+    {
+      "id": 1,
+      "name": "Knockout",
+      "restriction": "cannot_act",
+      "removal": "none",
+      "slip_hp_percent": 0,
+      "note": "Applied when HP reaches 0. Healing does not remove it."
+    },
+    {
+      "id": 2,
+      "name": "Poison",
+      "restriction": "none",
+      "removal": {
+        "turns": {
+          "min": 3,
+          "max": 3
+        }
+      },
+      "slip_hp_percent": 10,
+      "note": ""
+    }
+  ],
+  "tilesets": [
+    {
+      "id": 0,
+      "name": "",
+      "image": "",
+      "columns": 8,
+      "tiles": [
+        {
+          "passage": "pass"
+        }
+      ],
+      "autotiles": [],
+      "note": ""
+    },
+    {
+      "id": 1,
+      "name": "Meadow",
+      "image": "meadow",
+      "columns": 8,
+      "tiles": [
+        {
+          "passage": "pass"
+        },
+        {
+          "passage": "pass"
+        },
+        {
+          "passage": "pass"
+        },
+        {
+          "passage": "block"
+        },
+        {
+          "passage": "pass"
+        },
+        {
+          "passage": "block"
+        },
+        {
+          "passage": "pass"
+        },
+        {
+          "passage": "pass"
+        },
+        {
+          "passage": "pass"
+        },
+        {
+          "passage": "pass"
+        },
+        {
+          "passage": "pass"
+        },
+        {
+          "passage": "pass"
+        },
+        {
+          "passage": "pass"
+        },
+        {
+          "passage": "pass"
+        },
+        {
+          "passage": "pass"
+        },
+        {
+          "passage": "pass"
+        },
+        {
+          "passage": "pass"
+        },
+        {
+          "passage": "pass"
+        },
+        {
+          "passage": "pass"
+        },
+        {
+          "passage": "pass"
+        },
+        {
+          "passage": "pass"
+        },
+        {
+          "passage": "pass"
+        },
+        {
+          "passage": "pass"
+        },
+        {
+          "passage": "pass"
+        },
+        {
+          "passage": "pass"
+        },
+        {
+          "passage": "pass"
+        },
+        {
+          "passage": "pass"
+        },
+        {
+          "passage": "pass"
+        },
+        {
+          "passage": "pass"
+        },
+        {
+          "passage": "pass"
+        },
+        {
+          "passage": "pass"
+        },
+        {
+          "passage": "pass"
+        },
+        {
+          "passage": "pass"
+        },
+        {
+          "passage": "pass"
+        },
+        {
+          "passage": "pass"
+        },
+        {
+          "passage": "pass"
+        },
+        {
+          "passage": "pass"
+        },
+        {
+          "passage": "pass"
+        },
+        {
+          "passage": "pass"
+        },
+        {
+          "passage": "pass"
+        }
+      ],
+      "autotiles": [
+        {
+          "tile_id": 8,
+          "origin_col": 0,
+          "origin_row": 1
+        }
+      ],
+      "note": "Lower layer is ground. Upper layer is flowers and trees. Tile 8 is the path autotile."
+    }
+  ],
+  "common_events": [
+    {
+      "id": 0,
+      "name": "",
+      "trigger": "none",
+      "switch_id": 0,
+      "list": []
+    },
+    {
+      "id": 1,
+      "name": "Rest",
+      "trigger": "none",
+      "switch_id": 0,
+      "list": [
+        {
+          "code": "recover_all",
+          "target": "entire_party"
+        },
+        {
+          "code": "show_text",
+          "face": "",
+          "speaker": "",
+          "lines": [
+            "Warmth returns to your limbs."
+          ]
+        }
+      ]
+    }
+  ],
+  "switches": [
+    "",
+    "Heard the Rumor"
+  ],
+  "variables": [
+    "",
+    "Talks"
+  ]
+}
