@@ -1,5 +1,6 @@
 /target
 **/dist/
+**/save/
 **/*.rs.bk
 **/.fablespace-build.log
 .DS_Store
