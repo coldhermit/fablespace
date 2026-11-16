@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use fablespace_data::{resolve, Direction};
 use fablespace_runtime::{draw, gpu, self_test, Input, Screen, Session};
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
@@ -65,6 +65,8 @@ fn main() {
         dir_edge: None,
         smoke: if args.gpu_smoke { Some(40) } else { None },
         failed: false,
+        cursor: None,
+        click: None,
     };
     if let Err(err) = event_loop.run_app(&mut app) {
         eprintln!("window: {err}");
@@ -120,6 +122,8 @@ struct App {
     dir_edge: Option<Direction>,
     smoke: Option<u32>,
     failed: bool,
+    cursor: Option<winit::dpi::PhysicalPosition<f64>>,
+    click: Option<(i32, i32)>,
 }
 
 #[derive(Default)]
@@ -170,6 +174,12 @@ impl ApplicationHandler for App {
                 self.keys = Keys::default();
             }
             WindowEvent::KeyboardInput { event, .. } => self.on_key(event),
+            WindowEvent::CursorMoved { position, .. } => self.cursor = Some(position),
+            WindowEvent::MouseInput { state, button, .. } => {
+                if button == MouseButton::Left && state == ElementState::Pressed {
+                    self.note_click();
+                }
+            }
             WindowEvent::RedrawRequested => self.redraw(),
             _ => {}
         }
@@ -188,6 +198,7 @@ impl ApplicationHandler for App {
             cancel: self.edges.cancel,
             menu: self.edges.menu,
             dash: self.keys.dash,
+            click: self.click.take(),
         };
         self.edges = Input::default();
         let modal = self.session.message.is_some()
@@ -269,6 +280,19 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn note_click(&mut self) {
+        let (Some(window), Some(position)) = (self.window.as_ref(), self.cursor) else {
+            return;
+        };
+        let size = window.inner_size();
+        self.click = draw::pointer_to_view(
+            size.width,
+            size.height,
+            position.x as f32,
+            position.y as f32,
+        );
     }
 
     fn redraw(&mut self) {

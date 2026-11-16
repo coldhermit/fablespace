@@ -1034,7 +1034,6 @@ name = "fablespace-maker"
 version = "0.1.0"
 dependencies = [
  "fablespace-data",
- "fablespace-runtime",
  "iced",
  "image 0.25.10",
  "serde_json",

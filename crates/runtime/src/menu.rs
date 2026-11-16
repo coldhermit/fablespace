@@ -494,7 +494,7 @@ impl Session {
             .unwrap_or_else(|| "—".into())
     }
 
-    fn menu_items(&self) -> Vec<u32> {
+    pub(crate) fn menu_items(&self) -> Vec<u32> {
         self.bag
             .items
             .iter()
@@ -509,7 +509,7 @@ impl Session {
             .collect()
     }
 
-    fn menu_skills(&self, actor: usize) -> Vec<u32> {
+    pub(crate) fn menu_skills(&self, actor: usize) -> Vec<u32> {
         let Some(member) = self.party.get(actor) else {
             return Vec::new();
         };

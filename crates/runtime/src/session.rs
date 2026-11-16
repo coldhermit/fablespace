@@ -18,6 +18,8 @@ pub struct Input {
     pub cancel: bool,
     pub menu: bool,
     pub dash: bool,
+    /// Left click in 544×416 game pixels.
+    pub click: Option<(i32, i32)>,
 }
 
 impl Input {
@@ -90,7 +92,7 @@ impl Default for Mover {
             dir: Direction::Down,
             moving: None,
             offset: 0,
-            speed: 4,
+            speed: 2,
             through: false,
             direction_fix: false,
             walk_anime: true,
@@ -262,6 +264,8 @@ impl Session {
     }
 
     pub fn update(&mut self, input: &Input) {
+        let input = self.retarget(input);
+        let input = &input;
         self.play_frames = self.play_frames.saturating_add(1);
         if self.notice_timer > 0 {
             self.notice_timer -= 1;
@@ -282,6 +286,169 @@ impl Session {
                 }
             }
             Screen::Map => self.update_map(input),
+        }
+    }
+
+    fn retarget(&mut self, input: &Input) -> Input {
+        let Some((x, y)) = input.click else {
+            return *input;
+        };
+        let Some(press) = crate::draw::press_at(self, x, y) else {
+            return *input;
+        };
+        if !self.apply_press(press) {
+            return *input;
+        }
+        Input {
+            confirm: true,
+            click: None,
+            dir: None,
+            cancel: false,
+            menu: false,
+            dash: input.dash,
+        }
+    }
+
+    fn apply_press(&mut self, press: crate::draw::Press) -> bool {
+        use crate::battle::Phase;
+        use crate::draw::Press;
+        use crate::menu::MenuPage;
+        match press {
+            Press::Confirm => true,
+            Press::Title(index) => {
+                self.title_cursor = index.min(2);
+                true
+            }
+            Press::Choice(index) => {
+                let Some(choice) = &mut self.choice else {
+                    return false;
+                };
+                if index >= choice.options.len() {
+                    return false;
+                }
+                choice.cursor = index;
+                true
+            }
+            Press::Save(index) => {
+                let Some(ui) = &mut self.save_ui else {
+                    return false;
+                };
+                if index >= ui.slots.len() {
+                    return false;
+                }
+                if ui.cursor != index {
+                    ui.confirm = false;
+                }
+                ui.cursor = index;
+                true
+            }
+            Press::MenuRoot(index) => {
+                let Some(menu) = &mut self.menu else {
+                    return false;
+                };
+                menu.cursor = index.min(5);
+                menu.page = MenuPage::Root;
+                true
+            }
+            Press::MenuItem(index) => match &mut self.menu {
+                Some(menu) => match &mut menu.page {
+                    MenuPage::Item { cursor, .. } => {
+                        *cursor = index;
+                        true
+                    }
+                    _ => false,
+                },
+                None => false,
+            },
+            Press::MenuSkill(index) => match &mut self.menu {
+                Some(menu) => match &mut menu.page {
+                    MenuPage::Skill { cursor, .. } => {
+                        *cursor = index;
+                        true
+                    }
+                    _ => false,
+                },
+                None => false,
+            },
+            Press::MenuEquip(index) => match &mut self.menu {
+                Some(menu) => match &mut menu.page {
+                    MenuPage::Equip { slot, .. } => {
+                        *slot = index;
+                        true
+                    }
+                    _ => false,
+                },
+                None => false,
+            },
+            Press::MenuBag(index) => match &mut self.menu {
+                Some(menu) => match &mut menu.page {
+                    MenuPage::EquipPick { cursor, .. } => {
+                        *cursor = index;
+                        true
+                    }
+                    _ => false,
+                },
+                None => false,
+            },
+            Press::MenuEnd(yes) => match &mut self.menu {
+                Some(menu) => match menu.page {
+                    MenuPage::End { .. } => {
+                        menu.page = MenuPage::End { yes };
+                        true
+                    }
+                    _ => false,
+                },
+                None => false,
+            },
+            Press::BattleCommand(index) => {
+                let Some(battle) = &mut self.battle else {
+                    return false;
+                };
+                if matches!(battle.phase, Phase::Command { .. }) {
+                    battle.phase = Phase::Command { cursor: index };
+                    true
+                } else {
+                    false
+                }
+            }
+            Press::BattleSkill(index) => {
+                let Some(battle) = &mut self.battle else {
+                    return false;
+                };
+                if matches!(battle.phase, Phase::Skill { .. }) {
+                    battle.phase = Phase::Skill { cursor: index };
+                    true
+                } else {
+                    false
+                }
+            }
+            Press::BattleItem(index) => {
+                let Some(battle) = &mut self.battle else {
+                    return false;
+                };
+                if matches!(battle.phase, Phase::Item { .. }) {
+                    battle.phase = Phase::Item { cursor: index };
+                    true
+                } else {
+                    false
+                }
+            }
+            Press::BattleEnemy(index) => {
+                let Some(battle) = &mut self.battle else {
+                    return false;
+                };
+                match &battle.phase {
+                    Phase::Target { pending, .. } => {
+                        let pending = pending.clone();
+                        battle.phase = Phase::Target {
+                            cursor: index,
+                            pending,
+                        };
+                        true
+                    }
+                    _ => false,
+                }
+            }
         }
     }
 
@@ -397,7 +564,7 @@ impl Session {
             tile_x: system.start_x as i32,
             tile_y: system.start_y as i32,
             dir: system.start_dir,
-            speed: 4,
+            speed: 2,
             ..Mover::default()
         };
         self.refresh_player_sprite();
@@ -1388,12 +1555,13 @@ fn freq_frames(freq: u8) -> u32 {
 }
 
 fn speed_px(speed: u8) -> i32 {
+    // A tile is 32px. Speed 2, the walk, takes 16 frames, so releasing the
+    // key lands on the next tile instead of several tiles later. Dash is
+    // one step faster and still finishes on a tile.
     match speed {
         1 => 1,
         2 => 2,
-        3 => 4,
-        4 => 8,
-        _ => 16,
+        _ => 4,
     }
 }
 

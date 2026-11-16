@@ -32,7 +32,7 @@ pub fn self_test(paths: fablespace_data::Paths) -> Result<(), String> {
             break;
         }
         session.update(&Input::walk(fablespace_data::Direction::Up));
-        for _ in 0..8 {
+        for _ in 0..40 {
             if session.player.moving.is_none() {
                 break;
             }
@@ -103,7 +103,7 @@ mod tests {
             session.player.moving.is_some(),
             "expected a step {dir:?} from ({x},{y})"
         );
-        for _ in 0..8 {
+        for _ in 0..40 {
             if session.player.moving.is_none() {
                 break;
             }
@@ -385,5 +385,159 @@ mod tests {
         assert!(session.switch(1));
         assert_eq!(session.screen, Screen::Map);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn meadow_tiles_are_drawn_from_the_sample_sheet() {
+        let (mut session, dir) = fresh();
+        session.new_game();
+        let sheet = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../sample/img/tilesets/meadow.png");
+        let image = image::open(&sheet).expect("sample tileset").to_rgba8();
+        assert!(image.width() >= 256 && image.height() >= 160);
+        let mut asked = false;
+        let sprites = crate::draw::frame(&session, &mut |key| {
+            if key == "tilesets/meadow" {
+                asked = true;
+                Some((image.width(), image.height()))
+            } else if key.starts_with("characters/") {
+                Some((384, 256))
+            } else {
+                Some((96, 96))
+            }
+        });
+        assert!(asked, "the map never asked for the meadow tileset");
+        let tiles: Vec<_> = sprites
+            .iter()
+            .filter(|sprite| sprite.key == "tilesets/meadow")
+            .collect();
+        assert!(
+            tiles.len() > 40,
+            "expected a meadow of tiles, drew {}",
+            tiles.len()
+        );
+        let mut colors = std::collections::HashSet::new();
+        for sprite in tiles.iter().take(24) {
+            let (sx, sy, sw, sh) = sprite.src;
+            assert!(sx + sw <= image.width() && sy + sh <= image.height());
+            let px = image.get_pixel(sx + sw / 2, sy + sh / 2);
+            colors.insert([px[0], px[1], px[2]]);
+        }
+        assert!(
+            colors.len() > 1,
+            "every sampled tile is the same color, so the sheet is not showing"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_tap_stops_on_the_next_tile() {
+        let (mut session, dir) = fresh();
+        session.new_game();
+        let start = (session.player.tile_x, session.player.tile_y);
+        session.update(&Input::walk(Direction::Up));
+        assert!(session.player.moving.is_some());
+        assert!(
+            session.player.offset <= 2,
+            "the first frame moved {} px",
+            session.player.offset
+        );
+        for _ in 0..40 {
+            session.update(&Input::default());
+        }
+        assert!(session.player.moving.is_none());
+        assert_eq!(
+            (session.player.tile_x, session.player.tile_y),
+            (start.0, start.1 - 1)
+        );
+        let mut held = 0;
+        for _ in 0..30 {
+            session.update(&Input::walk(Direction::Up));
+            held += 1;
+            let _ = held;
+        }
+        let tiles = start.1 - 1 - session.player.tile_y;
+        assert!(tiles <= 2, "half a second of walking crossed {tiles} tiles");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn click(session: &mut Session, at: (i32, i32)) {
+        session.update(&Input {
+            click: Some(at),
+            ..Input::default()
+        });
+    }
+
+    #[test]
+    fn clicks_drive_title_menu_choices_battle_and_save() {
+        let (mut session, dir) = fresh();
+        click(&mut session, (200, 360));
+        assert!(session.quit, "the shutdown row did not take the click");
+        session.quit = false;
+
+        session.new_game();
+        session.update(&Input {
+            menu: true,
+            ..Input::default()
+        });
+        click(&mut session, (40, 45));
+        assert!(
+            matches!(
+                session.menu.as_ref().map(|menu| &menu.page),
+                Some(crate::menu::MenuPage::Skill { .. })
+            ),
+            "the skill row did not open"
+        );
+        click(&mut session, (40, 110));
+        assert!(session.save_ui.is_some(), "the save row did not open");
+        click(&mut session, (200, 170));
+        assert!(
+            dir.join("save").join("slot02.json").is_file(),
+            "clicking the second slot did not write it"
+        );
+
+        session.save_ui = None;
+        session.menu = None;
+        session.choice = Some(crate::session::ChoiceUi {
+            options: vec!["Stay".into(), "Leave".into()],
+            cursor: 0,
+            branches: vec![vec![], vec![]],
+            cancel: fablespace_data::CancelMode::Disallow,
+            cancel_branch: vec![],
+        });
+        click(&mut session, (360, 300));
+        assert!(
+            session.choice.is_none(),
+            "the second choice did not take the click"
+        );
+
+        session.start_battle(1, true);
+        assert!(session.message.is_some());
+        click(&mut session, (100, 360));
+        assert!(
+            matches!(
+                session.battle.as_ref().map(|battle| &battle.phase),
+                Some(crate::battle::Phase::Command { .. })
+            ),
+            "dismissing the battle line did not reach commands"
+        );
+        click(&mut session, (300, 278));
+        assert!(
+            !matches!(
+                session.battle.as_ref().map(|battle| &battle.phase),
+                Some(crate::battle::Phase::Command { .. })
+            ),
+            "attack did not take the click"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn window_clicks_land_in_the_letterboxed_view() {
+        assert_eq!(
+            crate::draw::pointer_to_view(1088, 832, 100.0, 80.0),
+            Some((50, 40))
+        );
+        assert_eq!(crate::draw::pointer_to_view(1088, 832, -1.0, 10.0), None);
     }
 }

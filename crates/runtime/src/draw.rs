@@ -169,6 +169,9 @@ fn draw_map(
     };
     let (cam_x, cam_y) = camera(session);
     let key = format!("tilesets/{}", tileset.image);
+    // The GPU loads an image the first time something asks for its size.
+    // Tiles have to ask, or the meadow is drawn as empty quads.
+    let sheet = image(&key);
     let tile = TILE as i32;
     let x0 = (cam_x / tile).max(0);
     let y0 = (cam_y / tile).max(0);
@@ -180,7 +183,7 @@ fn draw_map(
         for x in x0..x1 {
             let dx = x * tile - cam_x;
             let dy = y * tile - cam_y;
-            if let Some(cell) = tile_cell(tileset, map, true, x, y) {
+            if let Some(cell) = tile_cell(tileset, map, true, x, y).filter(|_| sheet.is_some()) {
                 blit(
                     out,
                     key.clone(),
@@ -192,7 +195,7 @@ fn draw_map(
                 rect(out, dx, dy, tile, tile, [0.15, 0.18, 0.12, 1.0]);
             }
             let upper = map.upper_at(x, y);
-            if upper == 0 {
+            if upper == 0 || sheet.is_none() {
                 continue;
             }
             let Some(cell) = tile_cell(tileset, map, false, x, y) else {
@@ -1010,4 +1013,218 @@ fn glyphs(out: &mut Vec<Sprite>, mut x: i32, y: i32, scale: i32, line: &str, col
 
 fn text_width(line: &str, scale: i32) -> i32 {
     line.chars().count() as i32 * 8 * scale.max(1)
+}
+
+/// A click in game pixels. The rectangles match the windows drawn above.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Press {
+    Confirm,
+    Title(usize),
+    Choice(usize),
+    Save(usize),
+    MenuRoot(usize),
+    MenuItem(usize),
+    MenuSkill(usize),
+    MenuEquip(usize),
+    MenuBag(usize),
+    MenuEnd(bool),
+    BattleCommand(usize),
+    BattleSkill(usize),
+    BattleItem(usize),
+    BattleEnemy(usize),
+}
+
+/// Map a window pixel into the 544×416 view, using the same letterbox as the GPU.
+pub fn pointer_to_view(win_w: u32, win_h: u32, px: f32, py: f32) -> Option<(i32, i32)> {
+    if win_w == 0 || win_h == 0 {
+        return None;
+    }
+    let scale = ((win_w / VIEW_W).min(win_h / VIEW_H)).max(1);
+    let view_w = VIEW_W * scale;
+    let view_h = VIEW_H * scale;
+    let ox = (win_w.saturating_sub(view_w)) / 2;
+    let oy = (win_h.saturating_sub(view_h)) / 2;
+    if px < ox as f32 || py < oy as f32 {
+        return None;
+    }
+    let x = (px as u32).saturating_sub(ox) / scale;
+    let y = (py as u32).saturating_sub(oy) / scale;
+    if x >= VIEW_W || y >= VIEW_H {
+        None
+    } else {
+        Some((x as i32, y as i32))
+    }
+}
+
+pub fn press_at(session: &Session, x: i32, y: i32) -> Option<Press> {
+    if session.message.is_some() {
+        return message_press(session, x, y);
+    }
+    if session.choice.is_some() {
+        return choice_press(session, x, y);
+    }
+    if session.save_ui.is_some() {
+        return save_press(session, x, y);
+    }
+    if session.menu.is_some() {
+        return menu_press(session, x, y);
+    }
+    if session.battle.is_some() {
+        return battle_press(session, x, y);
+    }
+    match session.screen {
+        Screen::Title => title_press(x, y),
+        Screen::GameOver => Some(Press::Confirm),
+        Screen::Map => None,
+    }
+}
+
+fn inside(x: i32, y: i32, rx: i32, ry: i32, rw: i32, rh: i32) -> bool {
+    x >= rx && y >= ry && x < rx + rw && y < ry + rh
+}
+
+fn row_index(
+    x: i32,
+    y: i32,
+    rx: i32,
+    ry: i32,
+    rw: i32,
+    stride: i32,
+    count: usize,
+) -> Option<usize> {
+    if count == 0 || !inside(x, y, rx, ry, rw, stride * count as i32) {
+        return None;
+    }
+    let index = (y - ry) / stride;
+    usize::try_from(index).ok().filter(|index| *index < count)
+}
+
+fn message_press(session: &Session, x: i32, y: i32) -> Option<Press> {
+    let face = session
+        .message
+        .as_ref()
+        .is_some_and(|message| !message.face.is_empty());
+    let h = if face { 112 } else { 78 };
+    let top = VIEW_H as i32 - h - 8;
+    inside(x, y, 8, top, VIEW_W as i32 - 16, h).then_some(Press::Confirm)
+}
+
+fn title_press(x: i32, y: i32) -> Option<Press> {
+    let w = 180;
+    let left = (VIEW_W as i32 - w) / 2;
+    let top = VIEW_H as i32 - 78 - 36;
+    let index = row_index(x, y, left + 8, top + 6, w - 16, 22, 3)?;
+    Some(Press::Title(index))
+}
+
+fn choice_press(session: &Session, x: i32, y: i32) -> Option<Press> {
+    let choice = session.choice.as_ref()?;
+    let w = 200;
+    let h = 12 + choice.options.len() as i32 * 16;
+    let left = VIEW_W as i32 - w - 16;
+    let top = VIEW_H as i32 - h - 96;
+    let index = row_index(x, y, left + 6, top + 4, w - 12, 16, choice.options.len())?;
+    Some(Press::Choice(index))
+}
+
+fn save_press(session: &Session, x: i32, y: i32) -> Option<Press> {
+    let ui = session.save_ui.as_ref()?;
+    let w = 360;
+    let h = 280;
+    let left = (VIEW_W as i32 - w) / 2;
+    let top = (VIEW_H as i32 - h) / 2;
+    let index = row_index(x, y, left + 10, top + 32, w - 20, 52, ui.slots.len())?;
+    Some(Press::Save(index))
+}
+
+fn menu_press(session: &Session, x: i32, y: i32) -> Option<Press> {
+    let menu = session.menu.as_ref()?;
+    if let Some(index) = row_index(x, y, 14, 15, 138, 22, 6) {
+        return Some(Press::MenuRoot(index));
+    }
+    match &menu.page {
+        MenuPage::Item { cursor, .. } => {
+            let items = session.menu_items();
+            let start = cursor.saturating_sub(10);
+            let shown = items.len().saturating_sub(start).min(12);
+            let index = row_index(x, y, 176, 38, 352, 16, shown)?;
+            Some(Press::MenuItem(start + index))
+        }
+        MenuPage::Skill { .. } => {
+            let actor = match menu.page {
+                MenuPage::Skill { actor, .. } => actor,
+                _ => 0,
+            };
+            let skills = session.menu_skills(actor);
+            let shown = skills.len().min(12);
+            let index = row_index(x, y, 176, 38, 352, 16, shown)?;
+            Some(Press::MenuSkill(index))
+        }
+        MenuPage::Equip { .. } => {
+            let index = row_index(x, y, 176, 38, 200, 18, EQUIP_LABELS.len())?;
+            Some(Press::MenuEquip(index))
+        }
+        MenuPage::EquipPick { slot, .. } => {
+            let choices = session.equip_choices(*slot);
+            let shown = choices.len().min(8);
+            let index = row_index(x, y, 176, 168, 340, 16, shown)?;
+            Some(Press::MenuBag(index))
+        }
+        MenuPage::End { .. } => {
+            if inside(x, y, 184, 80, 48, 20) {
+                Some(Press::MenuEnd(false))
+            } else if inside(x, y, 240, 80, 48, 20) {
+                Some(Press::MenuEnd(true))
+            } else {
+                None
+            }
+        }
+        MenuPage::Root | MenuPage::Status { .. } => None,
+    }
+}
+
+fn battle_press(session: &Session, x: i32, y: i32) -> Option<Press> {
+    let battle = session.battle.as_ref()?;
+    match &battle.phase {
+        Phase::Command { .. } => {
+            let escape =
+                battle.can_escape && first_conscious(session, battle) == Some(battle.actor_slot);
+            let count = if escape { 5 } else { 4 };
+            let index = row_index(x, y, 276, 272, 252, 16, count)?;
+            Some(Press::BattleCommand(index))
+        }
+        Phase::Skill { cursor } => {
+            let skills = session.command_skills();
+            let start = cursor.saturating_sub(6);
+            let shown = skills.len().saturating_sub(start).min(7);
+            let index = row_index(x, y, 276, 272, 252, 16, shown)?;
+            Some(Press::BattleSkill(start + index))
+        }
+        Phase::Item { cursor } => {
+            let items = session.battle_items();
+            let start = cursor.saturating_sub(6);
+            let shown = items.len().saturating_sub(start).min(7);
+            let index = row_index(x, y, 276, 272, 252, 16, shown)?;
+            Some(Press::BattleItem(start + index))
+        }
+        Phase::Target { .. } => enemy_press(battle, x, y),
+        _ => None,
+    }
+}
+
+fn enemy_press(battle: &Battle, x: i32, y: i32) -> Option<Press> {
+    let living: Vec<usize> = battle
+        .enemies
+        .iter()
+        .enumerate()
+        .filter(|(_, fighter)| fighter.hp > 0)
+        .map(|(index, _)| index)
+        .collect();
+    for (cursor, index) in living.iter().enumerate() {
+        let enemy = &battle.enemies[*index];
+        if inside(x, y, enemy.x - 48, enemy.y - 48, 96, 96) {
+            return Some(Press::BattleEnemy(cursor));
+        }
+    }
+    None
 }

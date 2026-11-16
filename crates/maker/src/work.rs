@@ -18,9 +18,8 @@ pub fn write_project(root: &Path, title: Option<&str>) -> Result<(), String> {
     if let Some(title) = title.map(str::trim).filter(|t| !t.is_empty()) {
         game.system.game_title = title.to_string();
     }
-    let title = game.system.game_title.clone();
     project::save_project(root, &game, &maps)?;
-    art::write_all(root, &title)
+    art::write_all(root)
 }
 
 pub fn load_project(root: &Path) -> Result<(Game, Vec<Map>), String> {

@@ -2,12 +2,11 @@
 
 use std::path::Path;
 
-use fablespace_runtime::FONT8X8;
 use image::{Rgba, RgbaImage};
 
 const TILE: u32 = 32;
 
-pub fn write_all(root: &Path, title: &str) -> Result<(), String> {
+pub fn write_all(root: &Path) -> Result<(), String> {
     let img = root.join("img");
     for folder in [
         "tilesets",
@@ -29,7 +28,7 @@ pub fn write_all(root: &Path, title: &str) -> Result<(), String> {
     save(&img.join("faces/mara.png"), face(Skin::mara()))?;
     save(&img.join("enemies/slime.png"), battler())?;
     save(&img.join("pictures/board.png"), notice())?;
-    save(&img.join("titles/title.png"), title_card(title))?;
+    save(&img.join("titles/title.png"), title_card())?;
     Ok(())
 }
 
@@ -349,7 +348,7 @@ fn notice() -> RgbaImage {
     image
 }
 
-fn title_card(title: &str) -> RgbaImage {
+fn title_card() -> RgbaImage {
     let mut image = RgbaImage::new(544, 416);
     for y in 0..416 {
         let t = y as f32 / 416.0;
@@ -374,45 +373,7 @@ fn title_card(title: &str) -> RgbaImage {
         image.put_pixel(x, 251, rgba(150, 120, 70, 255));
     }
     blob(&mut image, 430, 250, 1, 16);
-    let label = if title.trim().is_empty() {
-        "Fable Hollow"
-    } else {
-        title
-    };
-    let scale = 3i32;
-    let width = label.chars().count() as i32 * 8 * scale;
-    let x0 = (544 - width).max(8) / 2;
-    glyphs(&mut image, x0 + 2, 66, scale, label, rgba(40, 30, 16, 180));
-    glyphs(&mut image, x0, 64, scale, label, rgba(250, 220, 140, 255));
     image
-}
-
-fn glyphs(image: &mut RgbaImage, mut x: i32, y: i32, scale: i32, text: &str, color: Rgba<u8>) {
-    for ch in text.chars() {
-        let index = if ch.is_ascii() {
-            ch as usize
-        } else {
-            b'?' as usize
-        };
-        let glyph = FONT8X8[index.min(127)];
-        if ch != ' ' {
-            for row in 0..8 {
-                for col in 0..8 {
-                    if (glyph[row] >> col) & 1 == 1 {
-                        fill(
-                            image,
-                            (x + col as i32 * scale) as u32,
-                            (y + row as i32 * scale) as u32,
-                            scale as u32,
-                            scale as u32,
-                            color,
-                        );
-                    }
-                }
-            }
-        }
-        x += 8 * scale;
-    }
 }
 
 fn fill(image: &mut RgbaImage, x: u32, y: u32, w: u32, h: u32, color: Rgba<u8>) {

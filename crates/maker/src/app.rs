@@ -1,5 +1,6 @@
 //! The maker window: projects, the map, and the database.
 
+mod chrome;
 mod edit;
 
 use std::path::{Path, PathBuf};
@@ -13,8 +14,7 @@ use iced::widget::{
     button, column, container, pick_list, row, scrollable, text, text_input, Column, Row,
 };
 use iced::{
-    event, mouse, Alignment, Color, Element, Length, Point, Rectangle, Size, Subscription, Task,
-    Theme,
+    event, mouse, Color, Element, Length, Point, Rectangle, Size, Subscription, Task, Theme,
 };
 use image::{Rgba, RgbaImage};
 
@@ -40,26 +40,6 @@ pub enum Screen {
 }
 
 impl Screen {
-    fn all() -> [Screen; 15] {
-        [
-            Screen::Map,
-            Screen::Actors,
-            Screen::Classes,
-            Screen::Skills,
-            Screen::Items,
-            Screen::Weapons,
-            Screen::Armors,
-            Screen::Enemies,
-            Screen::Troops,
-            Screen::States,
-            Screen::Tilesets,
-            Screen::Commons,
-            Screen::Switches,
-            Screen::Variables,
-            Screen::System,
-        ]
-    }
-
     fn label(self) -> &'static str {
         match self {
             Screen::Map => "Map",
@@ -85,6 +65,38 @@ impl Screen {
             self,
             Screen::Map | Screen::Switches | Screen::Variables | Screen::System
         )
+    }
+
+    fn nav(self) -> Nav {
+        match self {
+            Screen::Map => Nav::World,
+            Screen::Commons | Screen::Switches | Screen::Variables => Nav::Events,
+            Screen::System => Nav::System,
+            _ => Nav::Database,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Nav {
+    World,
+    Database,
+    Events,
+    System,
+}
+
+impl Nav {
+    fn label(self) -> &'static str {
+        match self {
+            Nav::World => "World",
+            Nav::Database => "Database",
+            Nav::Events => "Events",
+            Nav::System => "System",
+        }
+    }
+
+    fn all() -> [Nav; 4] {
+        [Nav::World, Nav::Database, Nav::Events, Nav::System]
     }
 }
 
@@ -139,6 +151,7 @@ pub struct Maker {
     pub(crate) game: Game,
     pub(crate) maps: Vec<Map>,
     pub(crate) screen: Screen,
+    nav: Nav,
     pub(crate) sel: u32,
     pub(crate) map_index: usize,
     pub(crate) event: Option<u32>,
@@ -176,6 +189,7 @@ pub enum Message {
     Build,
     Tick,
     Show(Screen),
+    OpenNav(Nav),
     Select(u32),
     Add,
     Delete,
@@ -246,10 +260,13 @@ pub enum Message {
 }
 
 pub fn start() -> iced::Result {
+    // `iced::executor::Default` is the tokio runtime because this crate
+    // enables iced's `tokio` feature.
     iced::application(title, update, view)
-        .window_size(Size::new(1280.0, 800.0))
+        .window_size(Size::new(1360.0, 880.0))
         .theme(theme)
         .subscription(subscription)
+        .executor::<iced::executor::Default>()
         .run_with(boot)
 }
 
@@ -260,6 +277,7 @@ fn boot() -> (Maker, Task<Message>) {
             game: Game::default(),
             maps: Vec::new(),
             screen: Screen::Map,
+            nav: Nav::World,
             sel: 1,
             map_index: 0,
             event: None,
@@ -369,6 +387,18 @@ impl Maker {
             Message::Build => self.start_job(true),
             Message::Tick => self.poll_job(),
             Message::Show(screen) => self.focus(screen),
+            Message::OpenNav(nav) => {
+                self.nav = nav;
+                if self.screen.nav() != nav {
+                    let screen = match nav {
+                        Nav::World => Screen::Map,
+                        Nav::Database => Screen::Actors,
+                        Nav::Events => Screen::Commons,
+                        Nav::System => Screen::System,
+                    };
+                    self.focus(screen);
+                }
+            }
             Message::Select(id) => {
                 self.sel = id;
                 self.page = 0;
@@ -442,6 +472,7 @@ impl Maker {
     }
 
     fn focus(&mut self, screen: Screen) {
+        self.nav = screen.nav();
         self.screen = screen;
         self.cmd_target = None;
         self.num_key.clear();
@@ -1278,51 +1309,87 @@ impl Maker {
 
     fn welcome(&self) -> Element<'_, Message> {
         let sample = work::workspace_root().join("sample/game.json").is_file();
-        let mut actions = row![
-            button(text("New Project")).on_press(Message::BeginNew),
-            button(text("Open Project")).on_press(Message::BeginOpen)
+        let mut actions = column![
+            chrome::action("New project", Some(Message::BeginNew)),
+            text("Start from a meadow you can paint.")
+                .size(14)
+                .color(chrome::MUTED),
+            chrome::action("Open project", Some(Message::BeginOpen)),
+            text("Open a folder that contains game.json.")
+                .size(14)
+                .color(chrome::MUTED),
         ]
         .spacing(8);
         if sample {
-            actions = actions.push(button(text("Open Fable Hollow")).on_press(Message::OpenSample));
+            actions = actions.push(chrome::action(
+                "Open Fable Hollow",
+                Some(Message::OpenSample),
+            ));
+            actions = actions.push(
+                text("The sample meadow: talk, a chest, and one battle.")
+                    .size(14)
+                    .color(chrome::MUTED),
+            );
         }
-        container(
+        let card = container(chrome::card(
+            "Maker",
             column![
-                text("Fablespace").size(42),
-                text("A small tile RPG maker. Paint maps, write events, fill the database, then playtest or build a folder you can copy.").size(18),
+                text("Fablespace").size(40).color(chrome::GOLD),
+                text("Paint a map, write the events, then play it or build a folder you can copy.")
+                    .size(18),
                 actions,
-                text(self.status.clone()),
+                text(self.status.clone()).size(14).color(chrome::MUTED),
             ]
-            .spacing(16)
-            .padding(28)
-            .max_width(720),
-        )
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .align_x(Alignment::Center)
-        .align_y(Alignment::Center)
-        .into()
+            .spacing(14)
+            .into(),
+        ))
+        .width(Length::Fixed(640.0));
+        container(card)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(iced::Alignment::Center)
+            .align_y(iced::Alignment::Center)
+            .into()
     }
 
     fn shell(&self) -> Element<'_, Message> {
-        let mut header = row![text("Fablespace").size(22)]
-            .spacing(8)
-            .align_y(iced::alignment::Vertical::Center);
-        if self.root.is_some() {
-            let title = self.game.system.game_title.clone();
-            header = header.push(text(title).size(18));
+        let subtitle = if let Some(root) = &self.root {
+            let name = self.game.system.game_title.clone();
+            let folder = root
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("project");
             if self.dirty {
-                header = header.push(text("Unsaved"));
+                format!("{name}  ·  {folder}  ·  unsaved")
+            } else {
+                format!("{name}  ·  {folder}")
             }
+        } else {
+            "No project open".into()
+        };
+        let mut actions = row![].spacing(8);
+        if self.root.is_some() {
             let busy = self.job.is_some();
-            header =
-                header.push(button(text("Save")).on_press_maybe((!busy).then_some(Message::Save)));
-            header = header.push(
-                button(text("Playtest")).on_press_maybe((!busy).then_some(Message::Playtest)),
-            );
-            header = header
-                .push(button(text("Build")).on_press_maybe((!busy).then_some(Message::Build)));
+            actions = actions.push(chrome::action("Save", (!busy).then_some(Message::Save)));
+            actions = actions.push(chrome::action(
+                "Playtest",
+                (!busy).then_some(Message::Playtest),
+            ));
+            actions = actions.push(chrome::action("Build", (!busy).then_some(Message::Build)));
         }
+        let header = chrome::bar(
+            row![
+                column![
+                    text("Fablespace").size(20).color(chrome::GOLD),
+                    text(subtitle).size(13).color(chrome::MUTED),
+                ]
+                .spacing(2),
+                iced::widget::horizontal_space(),
+                actions,
+            ]
+            .align_y(iced::alignment::Vertical::Center)
+            .into(),
+        );
         let body: Element<'_, Message> = if self.browser.is_some() {
             self.browser_view()
         } else if self.screen == Screen::Map {
@@ -1332,16 +1399,23 @@ impl Maker {
         };
         let body = if self.root.is_some() && self.browser.is_none() {
             row![self.nav(), body]
-                .spacing(12)
+                .spacing(16)
                 .height(Length::Fill)
                 .into()
         } else {
             body
         };
         container(
-            column![header, body, text(self.status.clone()).width(Length::Fill)]
-                .spacing(8)
-                .padding(12),
+            column![
+                header,
+                body,
+                text(self.status.clone())
+                    .size(13)
+                    .color(chrome::MUTED)
+                    .width(Length::Fill),
+            ]
+            .spacing(12)
+            .padding(16),
         )
         .width(Length::Fill)
         .height(Length::Fill)
@@ -1349,23 +1423,64 @@ impl Maker {
     }
 
     fn nav(&self) -> Element<'_, Message> {
-        let mut column = Column::new().spacing(4);
-        for screen in Screen::all() {
-            let label = if screen == self.screen {
-                format!("▸ {}", screen.label())
-            } else {
-                screen.label().to_string()
-            };
-            column = column.push(
-                button(text(label))
-                    .on_press(Message::Show(screen))
-                    .width(Length::Fill),
-            );
+        let mut column = Column::new().spacing(14).padding([4, 0]);
+        for nav in Nav::all() {
+            let open = self.nav == nav;
+            let mark = if open { "▾" } else { "▸" };
+            column = column.push(chrome::nav_item(
+                format!("{mark}  {}", nav.label()),
+                open,
+                Message::OpenNav(nav),
+            ));
+            if !open {
+                continue;
+            }
+            column = column.push(self.nav_pages(nav));
         }
         scrollable(column)
-            .width(Length::Fixed(176.0))
+            .width(Length::Fixed(210.0))
             .height(Length::Fill)
             .into()
+    }
+
+    fn nav_pages(&self, nav: Nav) -> Element<'_, Message> {
+        let item = |screen: Screen| {
+            chrome::nav_item(
+                screen.label().to_string(),
+                self.screen == screen,
+                Message::Show(screen),
+            )
+        };
+        let mut column = Column::new().spacing(6).padding(iced::Padding {
+            left: 8.0,
+            ..iced::Padding::ZERO
+        });
+        match nav {
+            Nav::World => column = column.push(item(Screen::Map)),
+            Nav::Database => {
+                column = column.push(chrome::group_label("PEOPLE"));
+                column = column.push(item(Screen::Actors));
+                column = column.push(item(Screen::Classes));
+                column = column.push(chrome::group_label("GEAR"));
+                column = column.push(item(Screen::Skills));
+                column = column.push(item(Screen::Items));
+                column = column.push(item(Screen::Weapons));
+                column = column.push(item(Screen::Armors));
+                column = column.push(chrome::group_label("FOES"));
+                column = column.push(item(Screen::Enemies));
+                column = column.push(item(Screen::Troops));
+                column = column.push(item(Screen::States));
+                column = column.push(chrome::group_label("TERRAIN"));
+                column = column.push(item(Screen::Tilesets));
+            }
+            Nav::Events => {
+                column = column.push(item(Screen::Commons));
+                column = column.push(item(Screen::Switches));
+                column = column.push(item(Screen::Variables));
+            }
+            Nav::System => column = column.push(item(Screen::System)),
+        }
+        column.into()
     }
 
     fn browser_view(&self) -> Element<'_, Message> {
@@ -1431,29 +1546,24 @@ impl Maker {
     }
 
     fn map_view(&self) -> Element<'_, Message> {
-        let mut tools = Column::new().spacing(6);
-        tools = tools.push(text("Map").size(20));
+        let mut maps = Column::new().spacing(6);
         for (index, map) in self.maps.iter().enumerate() {
-            let label = if index == self.map_index {
-                format!("▸ {} ({})", map.name, map.id)
-            } else {
-                format!("{} ({})", map.name, map.id)
-            };
-            tools = tools.push(
-                button(text(label))
-                    .on_press(Message::ChooseMap(index))
-                    .width(Length::Fill),
-            );
+            let label = format!("{}  {}", map.name, map.id);
+            maps = maps.push(chrome::nav_item(
+                label,
+                index == self.map_index,
+                Message::ChooseMap(index),
+            ));
         }
-        tools = tools.push(
+        maps = maps.push(
             row![
-                button(text("New map")).on_press(Message::NewMap),
-                button(text("Delete last")).on_press(Message::DeleteMap)
+                chrome::action("New map", Some(Message::NewMap)),
+                chrome::action("Delete last", Some(Message::DeleteMap)),
             ]
-            .spacing(4),
+            .spacing(8),
         );
         if let Some(map) = self.map() {
-            tools = tools.push(
+            maps = maps.push(
                 text_input("Name", &map.name).on_input(|value| Message::Text {
                     key: "map.name".into(),
                     value,
@@ -1475,89 +1585,97 @@ impl Maker {
                 .iter()
                 .any(|item| item == &current)
                 .then_some(current);
-            tools = tools.push(pick_list(tilesets, selected, |value| Message::Pick {
+            maps = maps.push(pick_list(tilesets, selected, |value| Message::Pick {
                 key: "map.tileset".into(),
                 value,
             }));
         }
-        tools = tools.push(
+        maps = maps.push(
             row![
                 text_input("W", &self.draft_w)
                     .on_input(Message::DraftWidth)
-                    .width(Length::Fixed(70.0)),
+                    .width(Length::Fixed(64.0)),
                 text_input("H", &self.draft_h)
                     .on_input(Message::DraftHeight)
-                    .width(Length::Fixed(70.0)),
-                button(text("Resize")).on_press(Message::ResizeMap)
+                    .width(Length::Fixed(64.0)),
+                chrome::action("Resize", Some(Message::ResizeMap)),
             ]
-            .spacing(4),
+            .spacing(8)
+            .align_y(iced::alignment::Vertical::Center),
         );
-        tools = tools.push(text(if self.lower {
-            "Layer: lower ground"
-        } else {
-            "Layer: upper decoration"
-        }));
-        tools = tools.push(
+        let paint = column![
+            text(if self.lower {
+                "Lower ground"
+            } else {
+                "Upper decoration"
+            })
+            .size(14)
+            .color(chrome::MUTED),
             row![
-                button(text(if self.lower { "▸ Lower" } else { "Lower" }))
-                    .on_press(Message::Layer(true)),
-                button(text(if self.lower { "Upper" } else { "▸ Upper" }))
-                    .on_press(Message::Layer(false))
+                chrome::nav_item("Lower".into(), self.lower, Message::Layer(true)),
+                chrome::nav_item("Upper".into(), !self.lower, Message::Layer(false)),
             ]
-            .spacing(4),
-        );
-        tools = tools.push(
+            .spacing(6),
             row![
-                button(text(if self.tool == Tool::Pencil {
-                    "▸ Pencil"
-                } else {
-                    "Pencil"
-                }))
-                .on_press(Message::Tool(Tool::Pencil)),
-                button(text(if self.tool == Tool::Event {
-                    "▸ Event"
-                } else {
-                    "Event"
-                }))
-                .on_press(Message::Tool(Tool::Event))
+                chrome::nav_item(
+                    "Pencil".into(),
+                    self.tool == Tool::Pencil,
+                    Message::Tool(Tool::Pencil),
+                ),
+                chrome::nav_item(
+                    "Event".into(),
+                    self.tool == Tool::Event,
+                    Message::Tool(Tool::Event),
+                ),
             ]
-            .spacing(4),
-        );
-        tools = tools.push(
+            .spacing(6),
             row![
-                button(text(if self.zoom == 1 { "▸ 1x" } else { "1x" })).on_press(Message::Zoom(1)),
-                button(text(if self.zoom == 2 { "▸ 2x" } else { "2x" })).on_press(Message::Zoom(2))
+                chrome::nav_item("1×".into(), self.zoom == 1, Message::Zoom(1)),
+                chrome::nav_item("2×".into(), self.zoom == 2, Message::Zoom(2)),
             ]
-            .spacing(4),
-        );
-        tools = tools.push(text("Left click paints. Right click samples. Tile 0 erases. Autotile corners follow neighbors.").size(14));
-        tools = tools.push(self.palette());
+            .spacing(6),
+            text("Left click paints. Right click samples. Tile 0 erases. An autotile follows its four neighbors.")
+                .size(13)
+                .color(chrome::MUTED),
+        ]
+        .spacing(8);
+        let mut events = Column::new().spacing(4);
         if let Some(map) = self.map() {
-            tools = tools.push(text("Events").size(16));
             for event in &map.events {
-                let label = if Some(event.id) == self.event {
-                    format!("▸ {} ({}, {})", event.name, event.x, event.y)
-                } else {
-                    format!("{} ({}, {})", event.name, event.x, event.y)
-                };
-                tools = tools.push(
-                    button(text(label))
-                        .on_press(Message::ChooseEvent(event.id))
-                        .width(Length::Fill),
+                let label = format!("{}   {}, {}", event.name, event.x, event.y);
+                events = events.push(chrome::nav_item(
+                    label,
+                    Some(event.id) == self.event,
+                    Message::ChooseEvent(event.id),
+                ));
+            }
+            if map.events.is_empty() {
+                events = events.push(
+                    text("No events on this map yet.")
+                        .size(13)
+                        .color(chrome::MUTED),
                 );
             }
         }
-        let canvas_view = self.canvas_view();
-        let editor = self.event_section();
+        let tools = column![
+            chrome::card("Maps", maps.into()),
+            chrome::card("Paint", paint.into()),
+            chrome::card("Tiles", self.palette()),
+            chrome::card("Events", events.into()),
+        ]
+        .spacing(12);
+        let stage = column![
+            chrome::card("Map", self.canvas_view()),
+            self.event_section(),
+        ]
+        .spacing(12);
         row![
             scrollable(tools)
-                .width(Length::Fixed(280.0))
+                .width(Length::Fixed(320.0))
                 .height(Length::Fill),
-            scrollable(column![canvas_view, editor].spacing(12))
-                .width(Length::Fill)
-                .height(Length::Fill),
+            scrollable(stage).width(Length::Fill).height(Length::Fill),
         ]
-        .spacing(12)
+        .spacing(16)
         .into()
     }
 

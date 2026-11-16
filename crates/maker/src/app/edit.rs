@@ -2,9 +2,10 @@
 
 use fablespace_data::command::{self, Command, MoveRoute, MoveStep, Slot, Step, Target};
 use fablespace_data::*;
-use iced::widget::{button, checkbox, pick_list, row, text, text_input, Column};
+use iced::widget::{button, checkbox, column, pick_list, row, text, text_input, Column};
 use iced::{Element, Length};
 
+use super::chrome;
 use super::{Maker, Message, Screen};
 
 impl Maker {
@@ -1098,40 +1099,36 @@ impl Maker {
     }
 
     pub(crate) fn database_view(&self) -> Element<'_, Message> {
-        let form = iced::widget::scrollable(self.detail())
+        let form = iced::widget::scrollable(chrome::card(self.screen.label(), self.detail()))
             .height(Length::Fill)
             .width(Length::Fill);
         if !self.screen.listed() {
             return form.into();
         }
-        let mut side = Column::new().spacing(4);
+        let mut side = Column::new().spacing(6);
         side = side.push(
             row![
-                btn("Add", Message::Add),
-                btn("Delete Last", Message::Delete),
-                btn("Clear", Message::Clear)
+                chrome::action("Add", Some(Message::Add)),
+                chrome::action("Delete last", Some(Message::Delete)),
+                chrome::action("Clear", Some(Message::Clear)),
             ]
-            .spacing(4),
+            .spacing(6),
         );
         for (id, name) in self.names() {
-            let label = if id == self.sel {
-                format!("▸ {id} {name}")
-            } else {
-                format!("{id} {name}")
-            };
-            side = side.push(
-                button(text(label))
-                    .on_press(Message::Select(id))
-                    .width(Length::Fill),
-            );
+            side = side.push(chrome::nav_item(
+                format!("{id}  {name}"),
+                id == self.sel,
+                Message::Select(id),
+            ));
         }
         row![
-            iced::widget::scrollable(side)
-                .width(Length::Fixed(230.0))
-                .height(Length::Fill),
+            chrome::card(
+                "Entries",
+                iced::widget::scrollable(side).height(Length::Fill).into(),
+            ),
             form
         ]
-        .spacing(12)
+        .spacing(16)
         .into()
     }
 
@@ -1148,44 +1145,50 @@ impl Maker {
         let Some(event) = map.events.iter().find(|event| event.id == event_id) else {
             return text("That event is no longer on this map.").into();
         };
-        let mut body = Column::new().spacing(8);
-        body = body.push(text(format!("Event {} — {}", event.id, event.name)).size(20));
-        body = body.push(field_text("event.name", "Name", &event.name));
-        body = body.push(
+        let identity = column![
+            field_text("event.name", "Name", &event.name),
             row![
                 field_num(self, "event.x", "X", event.x),
                 field_num(self, "event.y", "Y", event.y),
-                btn("Delete event", Message::DeleteEvent)
+                chrome::action("Delete event", Some(Message::DeleteEvent)),
             ]
-            .spacing(8),
-        );
-        let mut pages = row![].spacing(4);
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+        ]
+        .spacing(8);
+        let mut pages = row![].spacing(6);
         for index in 0..event.pages.len() {
-            let label = if index == self.page {
-                format!("▸ Page {}", index + 1)
-            } else {
-                format!("Page {}", index + 1)
-            };
-            pages = pages.push(button(text(label)).on_press(Message::ChoosePage(index)));
+            pages = pages.push(chrome::nav_item(
+                format!("Page {}", index + 1),
+                index == self.page,
+                Message::ChoosePage(index),
+            ));
         }
-        body = body.push(pages);
-        body = body.push(
+        let pages = column![
+            pages,
             row![
-                btn("Add page", Message::AddPage),
-                btn("Delete page", Message::DeletePage)
+                chrome::action("Add page", Some(Message::AddPage)),
+                chrome::action("Delete page", Some(Message::DeletePage)),
             ]
             .spacing(8),
-        );
+        ]
+        .spacing(8);
+        let mut stack = Column::new().spacing(12);
+        stack = stack.push(chrome::card(
+            &format!("Event {} · {}", event.id, event.name),
+            identity.into(),
+        ));
+        stack = stack.push(chrome::card("Pages", pages.into()));
         if let Some(page) = event.pages.get(self.page) {
-            body = body.push(text("Page conditions use 0 for unused.").size(14));
-            body = body.push(
+            let conditions = column![
+                text("Use 0 when a condition is unused.")
+                    .size(13)
+                    .color(chrome::MUTED),
                 row![
                     field_num(self, "page.sw1", "Switch 1", page.conditions.switch_1),
                     field_num(self, "page.sw2", "Switch 2", page.conditions.switch_2),
                 ]
                 .spacing(8),
-            );
-            body = body.push(
                 row![
                     field_num(self, "page.var", "Variable", page.conditions.variable_id),
                     field_num(
@@ -1196,26 +1199,21 @@ impl Maker {
                     ),
                 ]
                 .spacing(8),
-            );
-            body = body.push(field_pick(
-                "page.self",
-                "Self switch",
-                self_options(),
-                self_current(page.conditions.self_switch),
-            ));
-            body = body.push(
+                field_pick(
+                    "page.self",
+                    "Self switch",
+                    self_options(),
+                    self_current(page.conditions.self_switch),
+                ),
                 row![
                     field_num(self, "page.item", "Item", page.conditions.item_id),
                     field_num(self, "page.actor", "Actor", page.conditions.actor_id),
                 ]
                 .spacing(8),
-            );
-            body = body.push(field_text(
-                "page.character",
-                "Character",
-                &page.image.character,
-            ));
-            body = body.push(
+            ]
+            .spacing(8);
+            let appearance = column![
+                field_text("page.character", "Character", &page.image.character),
                 row![
                     field_num(self, "page.index", "Index", page.image.index),
                     field_pick(
@@ -1227,8 +1225,6 @@ impl Maker {
                     field_num(self, "page.pattern", "Pattern", page.image.pattern),
                 ]
                 .spacing(8),
-            );
-            body = body.push(
                 row![
                     field_pick(
                         "page.trigger",
@@ -1244,8 +1240,9 @@ impl Maker {
                     ),
                 ]
                 .spacing(8),
-            );
-            body = body.push(
+            ]
+            .spacing(8);
+            let mut movement = column![
                 row![
                     field_pick(
                         "page.move",
@@ -1257,8 +1254,6 @@ impl Maker {
                     field_num(self, "page.frequency", "Frequency", page.move_frequency),
                 ]
                 .spacing(8),
-            );
-            body = body.push(
                 row![
                     check("page.walk", "Walk animation", page.walk_anime),
                     check("page.step", "Step animation", page.step_anime),
@@ -1266,14 +1261,18 @@ impl Maker {
                     check("page.through", "Through", page.through),
                 ]
                 .spacing(8),
-            );
+            ]
+            .spacing(8);
             if page.move_type == MoveType::Custom {
-                body = body.push(text("Custom route").size(16));
-                body = body.push(self.route_editor("page", &page.route));
+                movement = movement.push(text("Custom route").size(15).color(chrome::GOLD));
+                movement = movement.push(self.route_editor("page", &page.route));
             }
+            stack = stack.push(chrome::card("Conditions", conditions.into()));
+            stack = stack.push(chrome::card("Appearance", appearance.into()));
+            stack = stack.push(chrome::card("Movement", movement.into()));
         }
-        body = body.push(self.command_editor());
-        body.into()
+        stack = stack.push(chrome::card("Commands", self.command_editor()));
+        stack.into()
     }
 
     fn detail(&self) -> Element<'_, Message> {
@@ -3612,7 +3611,7 @@ fn id_current(id: u32, name: &str) -> String {
 }
 
 fn heading(label: &str) -> Element<'static, Message> {
-    text(label.to_string()).size(22).into()
+    text(label.to_string()).size(22).color(chrome::GOLD).into()
 }
 
 fn missing() -> Element<'static, Message> {
@@ -3626,7 +3625,10 @@ fn btn(label: &str, message: Message) -> Element<'static, Message> {
 fn field_text(key: &str, label: &str, value: &str) -> Element<'static, Message> {
     let key = key.to_string();
     row![
-        text(label.to_string()).width(Length::Fixed(140.0)),
+        text(label.to_string())
+            .size(14)
+            .color(chrome::MUTED)
+            .width(Length::Fixed(140.0)),
         text_input("", value)
             .on_input(move |value| Message::Text {
                 key: key.clone(),
@@ -3634,7 +3636,8 @@ fn field_text(key: &str, label: &str, value: &str) -> Element<'static, Message> 
             })
             .width(Length::Fill),
     ]
-    .spacing(8)
+    .spacing(10)
+    .align_y(iced::Alignment::Center)
     .into()
 }
 
@@ -3647,7 +3650,10 @@ fn field_num<'a>(
     let shown = maker.shown(key, value);
     let key = key.to_string();
     row![
-        text(label.to_string()).width(Length::Fixed(110.0)),
+        text(label.to_string())
+            .size(14)
+            .color(chrome::MUTED)
+            .width(Length::Fixed(110.0)),
         text_input("0", &shown)
             .on_input(move |value| Message::Num {
                 key: key.clone(),
@@ -3655,7 +3661,8 @@ fn field_num<'a>(
             })
             .width(Length::Fixed(90.0)),
     ]
-    .spacing(6)
+    .spacing(8)
+    .align_y(iced::Alignment::Center)
     .into()
 }
 
@@ -3671,14 +3678,18 @@ fn field_pick(
         .then_some(current);
     let key = key.to_string();
     row![
-        text(label.to_string()).width(Length::Fixed(140.0)),
+        text(label.to_string())
+            .size(14)
+            .color(chrome::MUTED)
+            .width(Length::Fixed(140.0)),
         pick_list(options, selected, move |value| Message::Pick {
             key: key.clone(),
             value
         })
         .width(Length::Fill),
     ]
-    .spacing(8)
+    .spacing(10)
+    .align_y(iced::Alignment::Center)
     .into()
 }
 

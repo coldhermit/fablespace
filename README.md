@@ -2,7 +2,7 @@
 
 Fablespace is a small tile RPG maker. Paint a map, write events, fill in the database, then play. A build is one folder you can copy onto another machine of the same operating system.
 
-The editor is an iced window. The game draws with wgpu.
+The maker is an iced window running on tokio. The game draws with wgpu.
 
 ## Maker
 
@@ -20,11 +20,12 @@ Rust 1.85 or newer. **New Project** writes a meadow you can edit. **Open Project
 cargo run -p fablespace-runtime -- --project sample
 ```
 
-- Arrows or WASD move.
+- Arrows or WASD move. A step finishes on the next tile, slow enough to stop where you meant.
 - Z, Enter, or Space confirms.
 - X or Backspace cancels.
 - Esc opens the menu, and closes a window when one is open.
 - Hold Shift to dash.
+- Click a title command, a choice, a menu row, a battle command, or a save slot. Click a message to advance it.
 
 The menu is items, skills, equipment, status, save, and end game. Battles are turn based: attack, guard, skills, and items. Save files are `save/slot01.json` through `save/slot04.json` next to the project, or next to the built game.
 
